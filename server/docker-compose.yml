@@ -1,0 +1,15 @@
+# 围猎后端：阿里云 ECS 单机部署一键起
+# 用法：在 server 目录下执行  docker compose up -d --build
+services:
+  weilie-server:
+    build: .
+    image: weilie-server:latest
+    container_name: weilie-server
+    ports:
+      - "8080:8080"
+    volumes:
+      # 快照持久化到宿主机，容器重建不丢队伍
+      - ./data:/app/data
+    environment:
+      - TZ=Asia/Shanghai
+    restart: unless-stopped

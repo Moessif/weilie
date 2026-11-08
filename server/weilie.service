@@ -1,0 +1,17 @@
+[Unit]
+Description=Weilie backend (Ktor)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/weilie
+Environment=WEILIE_DATA_DIR=/opt/weilie/data
+ExecStart=/usr/bin/java -Xms64m -Xmx320m -jar /opt/weilie/weilie-server-all.jar
+Restart=always
+RestartSec=3
+StandardOutput=append:/var/log/weilie.log
+StandardError=append:/var/log/weilie.log
+
+[Install]
+WantedBy=multi-user.target

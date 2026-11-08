@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- 采集与定位：核心权限。READ_PHONE_STATE 仅用于双卡场景按订阅读取每张卡的驻留小区
+         （SubscriptionManager.getActiveSubscriptionInfoList）；未授权时采集层自动回退到默认订阅，
+         单卡采集本身不需要它，仍然保持最小化。 -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
+    <application
+        android:name=".WeilieApp"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Weilie"
+        android:usesCleartextTraffic="true"
+        tools:replace="android:allowBackup,android:icon,android:label,android:theme">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 走测采样前台服务（location 类型，targetSdk 34+ 必须声明类型） -->
+        <service
+            android:name=".service.SamplingForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
+
+        <!-- 拍照标记：FileProvider 共享临时文件 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <!-- 百度地图 AK（绑定包名 com.gakj.weilie + 调试签名 SHA1） -->
+        <meta-data
+            android:name="com.baidu.lbsapi.API_KEY"
+            android:value="lqeP84o4zxNmqIeWK7NZWo6yZtF59syY" />
+
+        <!-- 百度定位服务（离线定位通道） -->
+        <service
+            android:name="com.baidu.location.f"
+            android:enabled="true"
+            android:exported="false"
+            android:process=":remote" />
+    </application>
+</manifest>

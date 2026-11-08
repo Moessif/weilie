@@ -1,0 +1,10 @@
+<resources>
+    <!-- Android 12+ 系统启动画面：显式指定底色，避免深色主题冷启动先白闪一下 -->
+    <style name="Theme.Weilie" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowBackground">#0B1020</item>
+        <item name="android:windowSplashScreenBackground">#0B1020</item>
+    </style>
+</resources>
