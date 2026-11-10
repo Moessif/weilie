@@ -15,6 +15,7 @@
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.VIBRATE" />
@@ -48,6 +49,16 @@
             android:name=".service.SamplingForegroundService"
             android:exported="false"
             android:foregroundServiceType="location" />
+
+        <!-- 静默跟踪：仅震动提示目标小区状态，不发声/不弹窗/不亮屏 -->
+        <service
+            android:name=".service.SilentTrackService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android:PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="按主区/邻区命中状态提供震动提示的静默跟踪" />
+        </service>
 
         <!-- 拍照标记：FileProvider 共享临时文件 -->
         <provider

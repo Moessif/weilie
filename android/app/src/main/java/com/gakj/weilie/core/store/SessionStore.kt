@@ -68,6 +68,28 @@ class SessionStore(context: Context) {
             ?.sortedByDescending { it.startedAtEpochMs }
             ?: emptyList()
 
+    /**
+     * 删除一个会话：整目录递归删除（manifest.json + samples.jsonl + 该会话的导出文件）。
+     * 只允许删除 root 的直接子目录，避免 taskId 里带 ../ 时误删别处。
+     */
+    fun deleteSession(taskId: String): Boolean {
+        if (taskId.isBlank()) return false
+        val dir = root.resolve(taskId)
+        if (!dir.exists()) return false
+        val parent = runCatching { dir.canonicalFile.parentFile }.getOrNull() ?: return false
+        val rootCanonical = runCatching { root.canonicalFile }.getOrNull() ?: return false
+        if (parent != rootCanonical) return false
+        return dir.deleteRecursively()
+    }
+
+    /** 删除全部会话，返回成功删除的会话数 */
+    fun deleteAllSessions(): Int {
+        val dirs = root.listFiles { d -> d.isDirectory } ?: return 0
+        var n = 0
+        dirs.forEach { if (runCatching { it.deleteRecursively() }.getOrDefault(false)) n++ }
+        return n
+    }
+
     fun exportCsvFile(taskId: String): File? {
         val samples = loadSamples(taskId)
         if (samples.isEmpty()) return null

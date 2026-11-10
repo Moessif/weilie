@@ -13,8 +13,8 @@ android {
         applicationId = "com.gakj.weilie"
         minSdk = 26
         targetSdk = 35
-        versionCode = 11
-        versionName = "0.4.5"
+        versionCode = 25
+        versionName = "0.11.2"
         ndk {
             // 只保留真机主力 ABI（arm64）与模拟器 ABI（x86_64），APK 体积减半
             abiFilters += listOf("arm64-v8a", "x86_64")

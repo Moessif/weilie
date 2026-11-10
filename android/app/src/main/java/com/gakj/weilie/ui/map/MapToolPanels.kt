@@ -16,7 +16,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.IosShare
+import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.PhotoCamera
+import androidx.compose.material.icons.rounded.Place
 import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -38,13 +40,17 @@ import com.gakj.weilie.ui.theme.WColors
 // A4 复杂工具浮窗内容（STRICT_SPEC 2.3）：导出 / 导航 / 帮助 / 拍照 / 设置
 // ==================================================================
 
-/** 数据导出浮窗：CSV / GeoJSON / KML / 轨迹图 PNG */
+/** 数据导出浮窗：CSV / GeoJSON / KML / 轨迹图 PNG / 带底图的现场图 / 理论覆盖区 / 封闭区域 */
 @Composable
 fun ExportPanel(
     onCsv: () -> Unit,
     onGeoJson: () -> Unit,
     onKml: () -> Unit,
     onTrackPng: () -> Unit,
+    onMapPng: () -> Unit,
+    onTheory: () -> Unit,
+    onArea: () -> Unit,
+    theoryOn: Boolean = false,
 ) {
     SectionHeader("数据导出")
     Spacer(Modifier.height(10.dp))
@@ -54,10 +60,26 @@ fun ExportPanel(
     Spacer(Modifier.height(8.dp))
     PanelActionRow("导出 KML（可在地图软件打开）", icon = Icons.Rounded.IosShare, onClick = onKml)
     Spacer(Modifier.height(8.dp))
-    PanelActionRow("导出轨迹图 PNG（可分享）", icon = Icons.Rounded.IosShare, onClick = onTrackPng)
+    PanelActionRow(
+        "导出轨迹图 PNG（含真实地图底图）",
+        icon = Icons.Rounded.IosShare,
+        onClick = onMapPng,
+    )
+    Spacer(Modifier.height(8.dp))
+    PanelActionRow("导出示意轨迹图 PNG（无底图，离线可用）", icon = Icons.Rounded.IosShare, onClick = onTrackPng)
+    Spacer(Modifier.height(14.dp))
+    SectionHeader("覆盖分析")
+    Spacer(Modifier.height(10.dp))
+    PanelActionRow(
+        if (theoryOn) "基站理论覆盖区（已绘制，点击修改）" else "基站理论覆盖区（画圆/扇形/TA 带）",
+        icon = Icons.Rounded.Place,
+        onClick = onTheory,
+    )
+    Spacer(Modifier.height(8.dp))
+    PanelActionRow("生成实测覆盖封闭区域（实心点成面）", icon = Icons.Rounded.Layers, onClick = onArea)
     Spacer(Modifier.height(10.dp))
     Text(
-        "导出后自动调起系统分享，可选择保存或发送。",
+        "导出后自动调起系统分享，可选择保存或发送。带底图的现场图会把当前地图上的实心/空心/彩色邻区点与理论区一起截下来。",
         style = MaterialTheme.typography.labelSmall,
         color = WColors.OnBgDim,
     )

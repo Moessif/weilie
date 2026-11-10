@@ -16,6 +16,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -39,6 +40,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Build
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Flag
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Layers
@@ -54,6 +57,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
@@ -80,14 +84,22 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import com.gakj.weilie.R
 import com.gakj.weilie.core.ai.AiClient
+import com.gakj.weilie.core.cellmap.CellLibraryClient
+import com.gakj.weilie.core.cellmap.CellSite as KnownCell
+import com.gakj.weilie.core.fitting.AreaBuilder
+import com.gakj.weilie.core.fitting.TrackBufferArea
 import com.gakj.weilie.core.fitting.CoverageFitter
 import com.gakj.weilie.core.fitting.CoverageResult
 import com.gakj.weilie.core.fitting.Geo
+import com.gakj.weilie.core.fitting.TheorySpec
 import com.gakj.weilie.core.parsing.TaskInputParser
 import com.gakj.weilie.core.rating.SignalRating
 import com.gakj.weilie.core.sampling.SamplingController
 import com.gakj.weilie.core.sync.WsMsg
+import com.gakj.weilie.core.telephony.NetMode
+import com.gakj.weilie.core.tracking.TrackState
 import com.gakj.weilie.service.SamplingForegroundService
+import com.gakj.weilie.service.SilentTrackService
 import com.gakj.weilie.ui.AppGraph
 import com.gakj.weilie.ui.Route
 import com.gakj.weilie.ui.ai.AiSheet
@@ -103,6 +115,7 @@ import com.gakj.weilie.ui.common.fmtDur
 import com.gakj.weilie.ui.common.fmtTs
 import com.gakj.weilie.ui.common.hasLocationPermission
 import com.gakj.weilie.ui.common.hasPerm
+import com.gakj.weilie.ui.common.navigateTo
 import com.gakj.weilie.ui.common.shareFile
 import com.gakj.weilie.ui.common.toast
 import com.gakj.weilie.ui.common.vibrate
@@ -169,6 +182,69 @@ fun SingleMapScreen(
     var inlineTool by remember { mutableStateOf<ToolId?>(null) }
     var popup by remember { mutableStateOf<ToolPopup?>(null) }
     var layerMode by remember { mutableStateOf(MapLayerMode.NORMAL) }
+
+    // ---- 需求 6：信号热力图（独立开关 + 间隔/半径/透明度可调） ----
+    var heatOn by remember { mutableStateOf(false) }
+    var heatParams by remember { mutableStateOf(HeatOverlayBuilder.Params()) }
+    var heatLayer by remember { mutableStateOf<HeatLayer?>(null) }
+
+    // ---- 需求 7：基站理论覆盖区（蓝=理论区 / 橙=TA 距离带） ----
+    var theory by remember { mutableStateOf<TheorySpec?>(null) }
+    var showTheory by remember { mutableStateOf(false) }
+
+    // ---- 需求 8：实心点封闭区域 ----
+    // 实测封闭区域：默认开启，随采样实时刷新（用户反馈「打的点没有被实时围成面积」）
+    var areaOn by remember { mutableStateOf(AppGraph.prefs.getBoolean(Route.PREF_AREA_ON, true)) }
+    var areaResult by remember { mutableStateOf<AreaBuilder.Result?>(null) }
+    // 成面方式：高精度凹包 / 模拟实测区域（轨迹点画圆或方块连成片），选择记住
+    var areaMode by remember {
+        mutableStateOf(
+            AreaBuilder.Mode.entries.firstOrNull {
+                it.name == AppGraph.prefs.getString(Route.PREF_AREA_MODE, "")
+            } ?: AreaBuilder.Mode.AUTO,
+        )
+    }
+    var areaBufferRadiusM by remember {
+        mutableStateOf(AppGraph.prefs.getFloat(Route.PREF_AREA_BUFFER_RADIUS, 30f).toDouble())
+    }
+    var areaBufferShape by remember {
+        mutableStateOf(
+            TrackBufferArea.Shape.entries.firstOrNull {
+                it.name == AppGraph.prefs.getString(Route.PREF_AREA_BUFFER_SHAPE, "")
+            } ?: TrackBufferArea.Shape.CIRCLE,
+        )
+    }
+    val areaBuildOptions = remember(areaMode, areaBufferRadiusM, areaBufferShape) {
+        AreaBuilder.Options(
+            mode = areaMode,
+            bufferRadiusM = areaBufferRadiusM,
+            bufferShape = areaBufferShape,
+        )
+    }
+
+    // ---- 基站位置库图层（OpenCelliD 众包坐标，参考图层） ----
+    var libraryOn by remember { mutableStateOf(false) }
+    var librarySites by remember { mutableStateOf<List<KnownCell>>(emptyList()) }
+    var selectedCell by remember { mutableStateOf<KnownCell?>(null) }
+    var showCellSearch by remember { mutableStateOf(false) }
+    val libraryClient = remember { CellLibraryClient(AppGraph.serverHttpUrl()) }
+    DisposableEffect(libraryClient) {
+        onDispose { runCatching { libraryClient.close() } }
+    }
+
+    // ---- 需求 10：静默跟踪 ----
+    val silentRunning by SilentTrackService.running.collectAsState()
+    val silentState by SilentTrackService.state.collectAsState()
+    // 需求四：震动强度（1 轻 / 3 中 / 5 强），与前台服务里的静态值同步
+    var silentStrength by remember { mutableIntStateOf(SilentTrackService.strength) }
+    val silentStateText = when (silentState) {
+        TrackState.MAIN -> "主区命中"
+        TrackState.NEIGHBOR -> "邻区命中"
+        TrackState.NONE -> "脱离目标"
+    }
+
+    // ---- 需求 2：GPS 双重安检提示 ----
+    val gateNotice by controller.gateNotice.collectAsState()
     var expertMode by remember { mutableStateOf(false) }
     var startedAt by remember { mutableStateOf(System.currentTimeMillis()) }
     var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
@@ -177,37 +253,57 @@ fun SingleMapScreen(
     var lastNotice by remember { mutableStateOf<String?>(null) }
     val seenEvents = remember { mutableIntStateOf(0) }
     var framedOnce by remember { mutableStateOf(false) }
-    val markers = remember { mutableStateListOf<WsMsg.Marker>() }
+    // 用不可变 List + 重新赋值：mutableStateListOf 的内容变化对「只把列表当参数往下传」的
+    // MapCanvas 不会触发重组，导致删除标点后地图上还留着（真机反馈）。
+    var markers by remember { mutableStateOf<List<WsMsg.Marker>>(emptyList()) }
     val photoPoints = remember { mutableStateListOf<String>() }
 
-    // 进入任务时回填取证标点：照片与索引都在 PhotoStore（进程重启后地图上也要能看到之前的标点，
-    // 否则用户点不到旧标点、也就打不开取证记录）。
+    // 用户从地图上移除过的取证标点 id（照片文件保留——它是证据；只是不再显示/回填）
+    var hiddenPhotoMarkers by remember { mutableStateOf(readHiddenPhotoMarkers()) }
+    fun hidePhotoMarker(id: String) {
+        if (id.isBlank()) return
+        hiddenPhotoMarkers = hiddenPhotoMarkers + id
+        AppGraph.prefs.edit()
+            .putString(Route.PREF_HIDDEN_PHOTO_MARKERS, hiddenPhotoMarkers.joinToString("\u0001"))
+            .apply()
+    }
+
+    // 进入任务时回填取证标点：只回填「本任务」拍的照片。
+    // 用户反馈：换新任务后，上一个任务的拍照标点还留在原来的位置——所以按 taskId 归属过滤；
+    // 老版本记录没有 taskId，用拍摄时间 >= 任务开始时间兜底（恢复任务时 createdAt 取 manifest 的开始时间，
+    // 因此继续旧任务仍能看到它自己的标点）。
     LaunchedEffect(task.id) {
+        // 换任务时先把「手动标点」清掉：上一个任务插的小旗不应跟着新任务跑
+        markers = markers.filterNot { it.photoId.isBlank() }
         runCatching {
-            // 回填本机全部取证标点（照片是现场证据，不按任务时间过滤；
-            // 恢复任务时 createdAt 会被重新赋值，按时间过滤会把旧标点全丢掉）
-            AppGraph.photoStore.list()
-                .filter { rec -> markers.none { it.photoId == rec.id } }
+            val restored = AppGraph.photoStore.list()
+                .filter { rec -> rec.id !in hiddenPhotoMarkers && markers.none { it.photoId == rec.id } }
+                .filter { rec -> rec.taskId == task.id || (rec.taskId.isBlank() && rec.ts >= task.createdAtEpochMs) }
                 .sortedBy { it.ts }
-                .forEach { rec ->
-                    markers.add(
-                        WsMsg.Marker(
-                            by = AppGraph.userId(),
-                            byName = if (rec.kind == "SUSPICIOUS") "可疑设备" else "拍照标点",
-                            lat = rec.lat,
-                            lon = rec.lon,
-                            kind = rec.kind,
-                            note = rec.title,
-                            ts = rec.ts,
-                            photoId = rec.id,
-                            deviceType = rec.deviceType,
-                        ),
+                .map { rec ->
+                    WsMsg.Marker(
+                        by = AppGraph.userId(),
+                        byName = if (rec.kind == "SUSPICIOUS") "可疑设备" else "拍照标点",
+                        lat = rec.lat,
+                        lon = rec.lon,
+                        kind = rec.kind,
+                        note = rec.title,
+                        ts = rec.ts,
+                        photoId = rec.id,
+                        deviceType = rec.deviceType,
                     )
                 }
+            if (restored.isNotEmpty()) markers = (markers + restored).sortedBy { it.ts }
         }
     }
     // 点击地图标点 → 打开该标点的取证记录（照片/可疑设备）
     var detailPhotoId by remember { mutableStateOf<String?>(null) }
+
+    // 需求 5：单人模式下也能在地图上自己标点并导航（点「标点」按钮 → 点地图落点）
+    var placeMarker by remember { mutableStateOf(false) }
+    // 需求二：单人模式标点也要能命名、能删除
+    var pendingFlagAt by remember { mutableStateOf<Pair<Double, Double>?>(null) }
+    var flagName by remember { mutableStateOf("") }
     var detailNotice by remember { mutableStateOf<WsMsg.Marker?>(null) }
 
     // 自由摆放的工具悬浮钮（长按拖出，归一化坐标持久化，最多 6 个）
@@ -315,6 +411,8 @@ fun SingleMapScreen(
     }
 
     fun startCollect() {
+        // 需求 1：打点间隔可调（默认 1s），上次选择在启动时恢复
+        controller.sampleIntervalMs = AppGraph.prefs.getLong(Route.PREF_SAMPLE_INTERVAL, 1_000L)
         controller.start()
         SamplingForegroundService.start(ctx)
     }
@@ -434,6 +532,57 @@ fun SingleMapScreen(
         }
     }
 
+    // 需求 6：信号热力图（样本变化或参数变化时重算；不在主线程做插值）
+    LaunchedEffect(heatOn, heatParams, samples.size, samples.lastOrNull()?.tsEpochMs) {
+        if (!heatOn) {
+            heatLayer = null
+            return@LaunchedEffect
+        }
+        if (samples.size < 2) return@LaunchedEffect
+        val snapshotSamples = samples
+        heatLayer = withContext(Dispatchers.Default) {
+            HeatOverlayBuilder.build(snapshotSamples, heatParams, version = System.currentTimeMillis())
+        }
+    }
+
+    // 需求 8：实心点封闭区域（凹包优先，点不足退化条带）
+    LaunchedEffect(areaOn, areaBuildOptions, samples.size, samples.lastOrNull()?.tsEpochMs) {
+        if (!areaOn) {
+            areaResult = null
+            return@LaunchedEffect
+        }
+        val snapshotSamples = samples
+        val opt = areaBuildOptions
+        areaResult = withContext(Dispatchers.Default) { AreaBuilder.build(snapshotSamples, opt) }
+    }
+
+    // 基站库图层：视野中心变化才查（拖动结束 800ms 防抖），近邻结果 60s 内走客户端记忆化
+    LaunchedEffect(libraryOn, camera.revision, samples.size) {
+        if (!libraryOn) return@LaunchedEffect
+        delay(800)
+        val lat = task.target.centerLat ?: camera.centerLat
+        val lon = task.target.centerLon ?: camera.centerLon
+        val centerLat = if (samples.isNotEmpty()) samples.last().lat else lat
+        val centerLon = if (samples.isNotEmpty()) samples.last().lon else lon
+        val resp = libraryClient.nearCached(centerLat, centerLon, CellLibraryClient.DEFAULT_RADIUS_M, 100)
+        if (resp.ok) {
+            librarySites = resp.sites
+        } else {
+            librarySites = emptyList()
+            lastNotice = resp.message.orEmpty().ifBlank { "基站库查询失败" }
+        }
+    }
+
+    // 需求 2：GPS 双重安检提示（精度不足 / 距上点过近已合并）
+    LaunchedEffect(gateNotice) {
+        val g = gateNotice
+        if (!g.isNullOrBlank()) {
+            lastNotice = g
+            delay(2600)
+            if (lastNotice == g) lastNotice = null
+        }
+    }
+
     // 首次取景：优先样本全览，其次目标参考圈
     LaunchedEffect(samples.size) {
         if (!framedOnce) {
@@ -518,6 +667,15 @@ fun SingleMapScreen(
         }
     }
 
+    // 目标命中态：数据栏「追踪目标」槽位据此显示命中/邻区命中/未命中，
+    // 避免用户把「服务小区信号良好」误读成「目标信号良好」。
+    val targetState = when {
+        unified == null -> TargetState.NONE
+        onTargetLive -> TargetState.HIT
+        targetSeenLive -> TargetState.NEIGHBOR
+        else -> TargetState.MISSING
+    }
+
     BoxWithConstraints(
         Modifier
             .fillMaxSize()
@@ -544,9 +702,28 @@ fun SingleMapScreen(
             selfLatLon = loc?.let { it.latitude to it.longitude },
             trackArrows = layerMode == MapLayerMode.TRACK,
             cellSites = if (layerMode == MapLayerMode.CELLS) extractCellSites(samples) else emptyList(),
+            sampleMarks = true,
+            area = areaResult?.takeIf { areaOn && it.ringLatLon.size >= 3 }?.let {
+                ClosedArea(ring = it.ringLatLon, label = it.kind.label)
+            },
+            theories = buildTheoryShapes(theory),
+            heat = heatLayer.takeIf { heatOn },
+            cellLibrary = if (libraryOn) librarySites else emptyList(),
+            selectedCellKey = selectedCell?.key,
+            onCellSiteClick = { site ->
+                selectedCell = site
+                camera.focusOn(site.lat, site.lon)
+            },
             onMarkerClick = { mk ->
                 // 有照片 → 打开取证记录；没有照片（纯标点）→ 显示标点信息
                 if (mk.photoId.isNotBlank()) detailPhotoId = mk.photoId else detailNotice = mk
+            },
+            onTapLatLon = { la, lo ->
+                if (placeMarker) {
+                    placeMarker = false
+                    flagName = ""
+                    pendingFlagAt = la to lo
+                }
             },
         )
 
@@ -579,29 +756,55 @@ fun SingleMapScreen(
                 durationText = fmtDur(nowMs - startedAt),
                 sampleCount = samples.size,
                 targetText = targetText,
+                targetState = targetState,
                 carrierText = carrierName(serving?.mcc, serving?.mnc),
-                ratText = if (snapshot?.dataRatLabel == "5G") "5G NSA" else serving?.rat?.displayName ?: "--",
+                ratText = when (snapshot?.netMode) {
+                    NetMode.SA -> "5G SA"
+                    NetMode.NSA -> "5G NSA"
+                    NetMode.LTE -> "4G LTE"
+                    NetMode.LEGACY -> serving?.rat?.displayName ?: "2G/3G"
+                    else -> serving?.rat?.displayName ?: "--"
+                },
                 servingText = run {
+                    val mode = snapshot?.netMode ?: NetMode.UNKNOWN
+                    val nr = snapshot?.nrServing
+                    val anchor = snapshot?.anchorLte ?: snapshot?.serving
                     val nrRow = snapshot?.sims?.firstOrNull { it.rat.contains("NR") }
-                    val anchor = serving?.display() ?: "尚未读到服务小区"
-                    if (snapshot?.dataRatLabel == "5G") {
-                        buildString {
-                            if (nrRow != null) {
-                                append("5G NR · ${nrRow.carrier} ${nrRow.ratBand} · NCI ${nrRow.cellIdText}")
-                                if (nrRow.pci != Int.MIN_VALUE) append(" · PCI ${nrRow.pci}")
-                                append(" · ${nrRow.rsrpText}")
-                                append("\n锚点 LTE · ")
-                                append(anchor)
-                            } else {
-                                append("5G NSA（数据卡为 5G，未解析到 NR 小区，锚点如下）\n")
-                                append(anchor)
+                    buildString {
+                        when (mode) {
+                            NetMode.SA -> {
+                                // SA：NR 就是服务小区，绝不能渲染「锚点 LTE」
+                                append("5G SA · ")
+                                append(nr?.display() ?: serving?.display() ?: "尚未读到 5G 服务小区")
+                                append("（独立组网，无 LTE 锚点）")
                             }
+                            NetMode.NSA -> {
+                                if (nrRow != null) {
+                                    append("5G NR · ${nrRow.carrier} ${nrRow.ratBand} · NCI ${nrRow.cellIdText}")
+                                    if (nrRow.pci != Int.MIN_VALUE) append(" · PCI ${nrRow.pci}")
+                                    append(" · ${nrRow.rsrpText}")
+                                } else if (nr != null) {
+                                    append("5G NR · ${nr.display()}")
+                                } else {
+                                    append("5G NSA（未解析到 NR 辅载波，LTE 锚点如下）")
+                                }
+                                append("\n锚点 LTE（5G NSA 的控制面承载）· ")
+                                append(anchor?.display() ?: "尚未读到 LTE 锚点")
+                            }
+                            else -> append(anchor?.display() ?: "尚未读到服务小区")
                         }
-                    } else {
-                        anchor
+                        val note = snapshot?.neighborNote.orEmpty()
+                        if (note.isNotBlank()) append("\n").append(note)
                     }
                 },
-                neighborCis = snapshot?.neighbors?.mapNotNull { it.ciHex } ?: emptyList(),
+                // 邻区列表：CI 可能为空（2G/3G 或部分 5G 邻区），不能只取 ciHex，否则
+                // 「附近还有 N 个基站」会显示 0，和读到的邻区数量对不上。
+                neighborCis = snapshot?.neighbors?.map { c ->
+                    c.ci?.toString()
+                        ?: c.pci?.let { "PCI $it" }
+                        ?: "${c.rat.displayName} 小区"
+                } ?: emptyList(),
+                neighborHint = snapshot?.neighborNote.orEmpty(),
                 confidenceText = fit?.confidence?.let { "${it.level.name} ${it.score0to100}分" },
                 snapshot = snapshot,
                 lastSample = samples.lastOrNull(),
@@ -639,6 +842,50 @@ fun SingleMapScreen(
                             layerMode = it
                             showLayers = false
                         },
+                        heatVisible = heatOn,
+                        heatParams = heatParams,
+                        onHeatToggle = {
+                            heatOn = it
+                            if (it && HeatOverlayBuilder.usableCount(samples) < 2) {
+                                toast(ctx, "热力图：主区/邻区命中点还不足 2 个，先多走几个点")
+                            }
+                        },
+                        onHeatParams = { heatParams = it },
+                        areaVisible = areaOn,
+                        onAreaToggle = {
+                            areaOn = it
+                            AppGraph.prefs.edit().putBoolean(Route.PREF_AREA_ON, it).apply()
+                            if (it && samples.size < 2) toast(ctx, "封闭区域：先多走几个点")
+                        },
+                        areaMode = areaMode,
+                        onAreaModeChange = { m ->
+                            areaMode = m
+                            AppGraph.prefs.edit().putString(Route.PREF_AREA_MODE, m.name).apply()
+                            if (m == AreaBuilder.Mode.SIMULATED && samples.isEmpty()) {
+                                toast(ctx, "模拟实测区域：边走边显示，轨迹点越多范围越完整")
+                            }
+                        },
+                        areaBufferRadiusM = areaBufferRadiusM,
+                        onAreaBufferRadius = { r ->
+                            areaBufferRadiusM = r
+                            AppGraph.prefs.edit().putFloat(Route.PREF_AREA_BUFFER_RADIUS, r.toFloat()).apply()
+                        },
+                        areaBufferShape = areaBufferShape,
+                        onAreaBufferShape = { s ->
+                            areaBufferShape = s
+                            AppGraph.prefs.edit().putString(Route.PREF_AREA_BUFFER_SHAPE, s.name).apply()
+                        },
+                        libraryVisible = libraryOn,
+                        libraryCount = librarySites.size,
+                        onLibraryToggle = {
+                            libraryOn = it
+                            selectedCell = null
+                            if (!it) librarySites = emptyList() else toast(ctx, "基站库：OpenCelliD 众包坐标，参考定位，非实测")
+                        },
+                        onLibrarySearch = {
+                            showLayers = false
+                            showCellSearch = true
+                        },
                         onDismiss = { showLayers = false },
                     )
                 }
@@ -659,6 +906,9 @@ fun SingleMapScreen(
         Column(
             Modifier
                 .align(Alignment.BottomEnd)
+                // 吞掉按钮之间空隙的点击：否则点了「标点」再点到按钮附近（但没点在按钮上）
+                // 会被地图当成落点，凭空冒出一个标点（用户真机反馈）
+                .pointerInput(Unit) { detectTapGestures { } }
                 .navigationBarsPadding()
                 .padding(end = 12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -672,6 +922,22 @@ fun SingleMapScreen(
                 },
                 onClick = { showAi = true },
             )
+            GlassIconButton(
+                size = 44.dp,
+                onMap = true,
+                content = {
+                    Icon(
+                        Icons.Rounded.Flag,
+                        contentDescription = "标点",
+                        tint = if (placeMarker) WColors.Primary else WColors.OnBg,
+                        modifier = Modifier.size(22.dp),
+                    )
+                },
+                onClick = {
+                    placeMarker = !placeMarker
+                    toast(ctx, if (placeMarker) "点击地图选择标点位置" else "已取消标点")
+                },
+            )
             GlassIconButton(Icons.Rounded.Add, size = 44.dp, onMap = true) { camera.zoomBy(1.18f) }
             GlassIconButton(Icons.Rounded.Remove, size = 44.dp, onMap = true) { camera.zoomBy(1f / 1.18f) }
             GlassIconButton(Icons.Rounded.MyLocation, size = 44.dp, onMap = true) {
@@ -679,7 +945,7 @@ fun SingleMapScreen(
             }
         }
 
-        // ---------- 底部居中：采集启停大钮 + 比例尺 ----------
+        // ---------- 底部居中：静默跟踪状态条 + 采集启停大钮 + 比例尺 ----------
         Column(
             Modifier
                 .align(Alignment.BottomCenter)
@@ -687,6 +953,40 @@ fun SingleMapScreen(
                 .padding(bottom = 10.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            // 需求 10：静默跟踪状态（明显停止入口：点这条即停）
+            if (silentRunning) {
+                val stColor = when (silentState) {
+                    TrackState.MAIN -> Color(MarkStyles.MAIN_FILL)
+                    TrackState.NEIGHBOR -> Color(0xFFF59E0B)
+                    TrackState.NONE -> WColors.Danger
+                }
+                Row(
+                    Modifier
+                        .padding(bottom = 8.dp)
+                        .mapGlass(RoundedCornerShape(14.dp))
+                        .clickable {
+                            SilentTrackService.stop(ctx)
+                            toast(ctx, "已停止静默跟踪")
+                        }
+                        .padding(horizontal = 12.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    PulsingDot(stColor, 9.dp)
+                    Spacer(Modifier.width(7.dp))
+                    Text(
+                        "静默跟踪 · $silentStateText",
+                        style = MonoText.style.copy(fontSize = 11.sp),
+                        color = stColor,
+                    )
+                    Spacer(Modifier.width(7.dp))
+                    Icon(
+                        Icons.Rounded.Close,
+                        contentDescription = "停止静默跟踪",
+                        tint = WColors.OnBgDim,
+                        modifier = Modifier.size(13.dp),
+                    )
+                }
+            }
             GlassIconButton(
                 label = if (running) "暂停" else "采集",
                 size = 44.dp,
@@ -841,6 +1141,29 @@ fun SingleMapScreen(
                 cellAlertOn.value = it
                 AppGraph.prefs.edit().putBoolean(Route.PREF_CELL_ALERT, it).apply()
             },
+            silent = silentRunning,
+            silentStateText = "静默跟踪 · $silentStateText",
+            silentAvailable = task.target.unifiedCi() != null,
+            silentStrength = silentStrength,
+            sampleIntervalMs = controller.sampleIntervalMs,
+            onSilent = { on ->
+                if (on) {
+                    toast(ctx, "静默跟踪已开启：仅震动（前台服务会持续耗电），可在通知栏或地图底部状态条停止")
+                    SilentTrackService.start(ctx)
+                } else {
+                    SilentTrackService.stop(ctx)
+                    toast(ctx, "静默跟踪已关闭")
+                }
+            },
+            onSilentStrength = { level ->
+                silentStrength = level
+                SilentTrackService.setStrength(ctx, level)
+            },
+            onSampleInterval = { ms ->
+                controller.sampleIntervalMs = ms
+                AppGraph.prefs.edit().putLong(Route.PREF_SAMPLE_INTERVAL, ms).apply()
+                toast(ctx, "打点间隔已设为 ${ms / 1000}s")
+            },
             onTool = { t ->
                 showTools = false
                 when (t) {
@@ -883,6 +1206,42 @@ fun SingleMapScreen(
                         onGeoJson = { exportGeoJsonAndShare(ctx, taskId, samples, task.target, fit) },
                         onKml = { exportKmlAndShare(ctx, taskId, task.title, samples, fit) },
                         onTrackPng = { shareTrackPng(ctx, samples, task.title) },
+                        onMapPng = {
+                            shareMapSnapshotPng(
+                                ctx = ctx,
+                                title = task.title,
+                                subtitle = "${fmtTs(System.currentTimeMillis())} · ${samples.size} 个采样点 · ${targetText}",
+                                legend = buildList {
+                                    add(MarkStyles.MAIN_FILL to "主区命中")
+                                    add(MarkStyles.baseColor(samples.lastOrNull()?.servingCi) to "邻区命中")
+                                    add(MarkStyles.OUT_RING to "脱离")
+                                    if (areaOn) add(0xFF34D399.toInt() to "实测覆盖区")
+                                    if (theory != null) add(TheoryShape.BLUE to "理论覆盖区")
+                                    if (theory?.radiusM != null) add(TheoryShape.ORANGE to "TA 距离带")
+                                    if (theory != null && areaOn) add(TheoryShape.PURPLE to "理论∩实测")
+                        if (libraryOn && librarySites.isNotEmpty()) add(0xFF22D3EE.toInt() to "基站库")
+                                },
+                            )
+                        },
+                        onTheory = { popup = null; showTheory = true },
+                        onArea = {
+                            popup = null
+                            areaOn = !areaOn
+                            AppGraph.prefs.edit().putBoolean(Route.PREF_AREA_ON, areaOn).apply()
+                            val r = if (areaOn) {
+                                areaResult ?: AreaBuilder.build(samples).also { areaResult = it }
+                            } else null
+                            toast(
+                                ctx,
+                                when {
+                                    !areaOn -> "已关闭实测封闭区域"
+                                    r == null || r.kind == AreaBuilder.Kind.NONE ->
+                                        "有效实心点不足（需 ≥2 个），暂无法成面"
+                                    else -> "已生成${r.kind.label} · ${r.pointCount} 个有效点"
+                                },
+                            )
+                        },
+                        theoryOn = theory != null,
                     )
                 }
                 ToolPopup.NAV -> GlassPanelDialog("定位与导航", { popup = null }) {
@@ -999,6 +1358,87 @@ fun SingleMapScreen(
         )
     }
 
+    // ---------- 基站库：选中的站址详情（含导航） ----------
+    selectedCell?.let { site ->
+        AlertDialog(
+            onDismissRequest = { selectedCell = null },
+            title = { Text(site.title) },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    KeyValueRow("编号", site.cellText)
+                    KeyValueRow("十六进制", site.hexCi)
+                    KeyValueRow("坐标", site.coordinateText)
+                    KeyValueRow("精度", site.accuracyText)
+                    KeyValueRow("覆盖半径", site.rangeText)
+                    loc?.let { l ->
+                        KeyValueRow("距我", CellLibraryClient.formatDistance(site.distanceM(l.latitude, l.longitude)), WColors.Primary)
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "众包坐标仅作参考。要确认覆盖范围，请以实测轨迹为准。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = WColors.OnBgDim,
+                    )
+                    Text(
+                        KnownCell.SOURCE_ATTRIBUTION,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = WColors.OnBgDim.copy(alpha = 0.8f),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton({
+                    navigateTo(ctx, site.lat, site.lon, site.title)
+                    selectedCell = null
+                }) { Text("导航到此") }
+            },
+            dismissButton = { TextButton({ selectedCell = null }) { Text("关闭") } },
+        )
+    }
+
+    // ---------- 基站库：查询弹窗 ----------
+    if (showCellSearch) {
+        CellSearchDialog(
+            onDismiss = { showCellSearch = false },
+            onPickSite = { site ->
+                showCellSearch = false
+                selectedCell = site
+                camera.focusOn(site.lat, site.lon)
+            },
+            initLat = loc?.latitude ?: samples.lastOrNull()?.lat ?: task.target.centerLat,
+            initLon = loc?.longitude ?: samples.lastOrNull()?.lon ?: task.target.centerLon,
+        )
+    }
+
+    // ---------- 需求 7：基站理论覆盖区 ----------
+    if (showTheory) {
+        GlassPanelDialog("基站理论覆盖区", { showTheory = false }) {
+            TheoryPanel(
+                initLat = loc?.latitude ?: task.target.centerLat,
+                initLon = loc?.longitude ?: task.target.centerLon,
+                current = theory,
+                onApply = { spec ->
+                    theory = spec
+                    showTheory = false
+                    toast(
+                        ctx,
+                        when {
+                            spec.azimuthDeg != null && spec.radiusM != null -> "已绘制定向扇区 + TA 距离带"
+                            spec.azimuthDeg != null -> "已绘制定向扇区（方位角 ${spec.azimuthDeg.toInt()}°）"
+                            spec.radiusM != null -> "已绘制 TA 距离环带（${spec.radiusM.toInt()} 米）"
+                            else -> "已绘制全向理论覆盖圆"
+                        },
+                    )
+                },
+                onClear = {
+                    theory = null
+                    showTheory = false
+                    toast(ctx, "已清除理论覆盖区")
+                },
+            )
+        }
+    }
+
     // ---------- A1 切换追踪基站 ----------
     if (switchCell) {
         SwitchCellDialog(
@@ -1053,16 +1493,35 @@ fun SingleMapScreen(
 
     // ---------- 标点取证记录（点击地图标点打开） ----------
     detailPhotoId?.let { pid ->
-        PhotoDetailSheet(photoId = pid) { detailPhotoId = null }
+        PhotoDetailSheet(
+            photoId = pid,
+            // 单人模式：拍摄者就是自己，可以直接从地图移除这个标点（照片保留在取证相册）
+            onDelete = {
+                markers = markers.filterNot { it.photoId == pid }
+                hidePhotoMarker(pid)
+                detailPhotoId = null
+                toast(ctx, "已从地图移除标点，照片仍保留在取证记录里")
+            },
+        ) { detailPhotoId = null }
     }
 
     // ---------- 标点详情（没有绑定照片的纯标点） ----------
     detailNotice?.let { mk ->
         AlertDialog(
             onDismissRequest = { detailNotice = null },
-            title = { Text(if (mk.kind == "SUSPICIOUS") "可疑设备标点" else "拍照标点") },
+            title = {
+                Text(
+                    when {
+                        mk.name.isNotBlank() -> mk.name
+                        mk.kind == "SUSPICIOUS" -> "可疑设备标点"
+                        mk.photoId.isBlank() && mk.by == "self" -> "我的标点"
+                        else -> "拍照标点"
+                    },
+                )
+            },
             text = {
                 Column {
+                    if (mk.name.isNotBlank()) KeyValueRow("名称", mk.name)
                     KeyValueRow("记录人", mk.byName.ifBlank { mk.by })
                     KeyValueRow("时间", fmtTs(mk.ts))
                     KeyValueRow("坐标", String.format(Locale.US, "%.6f, %.6f", mk.lat, mk.lon))
@@ -1070,13 +1529,84 @@ fun SingleMapScreen(
                     if (mk.deviceType.isNotBlank()) KeyValueRow("可疑类型", mk.deviceType)
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "该标点没有关联的取证照片（旧版本创建的标点）。重新拍照会同时保存照片与标点。",
+                        if (mk.by == "self" && mk.photoId.isBlank()) "手动放置的标点：点「导航到此」可唤起地图应用走过去。"
+                        else "该标点没有关联的取证照片（旧版本创建的标点）。重新拍照会同时保存照片与标点。",
                         style = MaterialTheme.typography.labelMedium,
+                        color = WColors.OnBgDim,
+                    )
+                    // 手动标点的删除入口放在正文里（原来藏在右下角「关闭」旁边，用户找不到）
+                    if ((mk.by == "self" || mk.by == AppGraph.userId()) && mk.photoId.isBlank()) {
+                        Spacer(Modifier.height(12.dp))
+                        TextButton(
+                            onClick = {
+                                markers = markers.filterNot {
+                                    (mk.id.isNotBlank() && it.id == mk.id) ||
+                                        (it.ts == mk.ts && it.lat == mk.lat && it.lon == mk.lon)
+                                }
+                                detailNotice = null
+                                toast(ctx, "已删除标点")
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text("删除这个标点", color = WColors.Danger) }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton({
+                    navigateTo(ctx, mk.lat, mk.lon, mk.note.ifBlank { "标点" })
+                    detailNotice = null
+                }) { Text("导航到此") }
+            },
+            dismissButton = {
+                TextButton({ detailNotice = null }) { Text("关闭") }
+            },
+        )
+    }
+
+    // ---------- 单人标点命名（需求二）----------
+    pendingFlagAt?.let { (la, lo) ->
+        AlertDialog(
+            onDismissRequest = { pendingFlagAt = null },
+            title = { Text("新建标点") },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = flagName,
+                        onValueChange = { flagName = it.take(24) },
+                        label = { Text("标点名称") },
+                        placeholder = { Text("如：3 号楼配电房") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "名称会显示在地图上；不填也可以，图标仍会显示。",
+                        style = MaterialTheme.typography.labelSmall,
                         color = WColors.OnBgDim,
                     )
                 }
             },
-            confirmButton = { TextButton({ detailNotice = null }) { Text("关闭") } },
+            confirmButton = {
+                TextButton({
+                    val finalName = flagName.trim()
+                    val ts = System.currentTimeMillis()
+                    markers = markers + WsMsg.Marker(
+                        by = "self",
+                        byName = "我",
+                        lat = la,
+                        lon = lo,
+                        kind = "FLAG",
+                        note = "手动标点",
+                        ts = ts,
+                        id = "self-$ts",
+                        name = finalName,
+                    )
+                    detailNotice = markers.lastOrNull()
+                    pendingFlagAt = null
+                    toast(ctx, if (finalName.isBlank()) "已放置标点" else "已放置标点：$finalName")
+                }) { Text("确定") }
+            },
+            dismissButton = { TextButton({ pendingFlagAt = null }) { Text("取消") } },
         )
     }
 
@@ -1087,23 +1617,22 @@ fun SingleMapScreen(
                 currentLat = loc?.latitude ?: camera.centerLat,
                 currentLon = loc?.longitude ?: camera.centerLon,
                 hasFix = loc != null,
+                taskId = task.id,
                 onClose = { showCamera = false },
                 onCaptured = { rec ->
                     showCamera = false
                     if (rec.lat != 0.0 || rec.lon != 0.0) {
                         // 标点用照片自带坐标（=拍摄时的 GPS），不再用地图中心
-                        markers.add(
-                            WsMsg.Marker(
-                                by = AppGraph.userId(),
-                                byName = if (rec.kind == "SUSPICIOUS") "可疑设备" else "拍照标点",
-                                lat = rec.lat,
-                                lon = rec.lon,
-                                kind = rec.kind,
-                                note = rec.title,
-                                ts = rec.ts,
-                                photoId = rec.id,
-                                deviceType = rec.deviceType,
-                            ),
+                        markers = markers + WsMsg.Marker(
+                            by = AppGraph.userId(),
+                            byName = if (rec.kind == "SUSPICIOUS") "可疑设备" else "拍照标点",
+                            lat = rec.lat,
+                            lon = rec.lon,
+                            kind = rec.kind,
+                            note = rec.title,
+                            ts = rec.ts,
+                            photoId = rec.id,
+                            deviceType = rec.deviceType,
                         )
                         photoPoints.add(
                             "${photoPoints.size + 1} · ${fmtTs(rec.ts)} · " +
@@ -1219,13 +1748,23 @@ private fun SwitchCellDialog(
     }
 }
 
-/** 比例尺：按当前缩放取 60~150px 的整刻度 */
+/**
+ * 比例尺：按当前缩放取 60~150px 的整刻度。
+ *
+ * 注意：这里必须把宽度硬钳住。Compose 的 Constraints 每个轴最多 262143px（2^18-1），
+ * 而 metersPerPixel 在最大缩放（zoom 21）时只有 ~0.057 m/px，
+ * 旧的「候选值全部落空就取 5000 m」会算出 8 万多 dp，在密度 3.5 的机器上超过 30 万 px，
+ * 直接抛 IllegalArgumentException: Can't represent a width of ... in Constraints（真机闪退根因）。
+ */
 @Composable
 private fun ScaleBar(camera: MapCamera, modifier: Modifier = Modifier) {
-    val candidates = listOf(25, 50, 100, 200, 500, 1000, 2000, 5000)
-    val mpp = camera.metersPerPixel
-    val best = candidates.firstOrNull { it / mpp in 60.0..150.0 } ?: candidates.last()
-    val widthDp = (best / mpp).dp
+    // 刻度候选从 1m 起：最大缩放下也能落到几十 px，不必回退到大刻度
+    val candidates = listOf(1, 2, 5, 10, 20, 25, 50, 100, 200, 500, 1000, 2000, 5000)
+    val rawMpp = camera.metersPerPixel
+    val mpp = if (rawMpp.isFinite() && rawMpp > 1e-6) rawMpp else 1.0
+    // 取离 100px 最近的一档（任何缩放下都有解，不再依赖 60~150 的窗口）
+    val best = candidates.minByOrNull { kotlin.math.abs(it / mpp - 100.0) } ?: 100
+    val widthDp = (best / mpp).dp.coerceIn(16.dp, 150.dp)
     Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
         Box(
             Modifier
@@ -1258,3 +1797,10 @@ private tailrec fun Context.findActivity(): Activity? =
         is ContextWrapper -> baseContext.findActivity()
         else -> null
     }
+
+/** 读取「已从地图移除的取证标点」集合（见 Route.PREF_HIDDEN_PHOTO_MARKERS，\u0001 分隔） */
+private fun readHiddenPhotoMarkers(): Set<String> =
+    (AppGraph.prefs.getString(Route.PREF_HIDDEN_PHOTO_MARKERS, "") ?: "")
+        .split('\u0001')
+        .filter { it.isNotBlank() }
+        .toSet()

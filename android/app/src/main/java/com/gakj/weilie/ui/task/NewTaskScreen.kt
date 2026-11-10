@@ -1,6 +1,8 @@
 package com.gakj.weilie.ui.task
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -12,33 +14,47 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.RadioButtonChecked
+import androidx.compose.material.icons.rounded.RadioButtonUnchecked
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.gakj.weilie.core.model.CoverageTask
+import com.gakj.weilie.core.model.TargetCell
 import com.gakj.weilie.core.model.TargetFormat
 import com.gakj.weilie.core.parsing.TaskInputParser
 import com.gakj.weilie.ui.AppGraph
-import com.gakj.weilie.ui.common.GlassTextField
 import com.gakj.weilie.ui.common.GlassTextButton
+import com.gakj.weilie.ui.common.GlassTextField
+import com.gakj.weilie.ui.common.HelpHint
+import com.gakj.weilie.ui.common.HelpTexts
 import com.gakj.weilie.ui.common.KeyValueRow
 import com.gakj.weilie.ui.common.ScreenTopBar
 import com.gakj.weilie.ui.common.StatusBadge
+import com.gakj.weilie.ui.common.toast
 import com.gakj.weilie.ui.theme.GlassCard
 import com.gakj.weilie.ui.theme.GlowButton
 import com.gakj.weilie.ui.theme.MonoText
@@ -51,8 +67,10 @@ import java.util.Locale
 import java.util.UUID
 
 /**
- * 新建走测任务：目标参数实时解析（TaskInputParser）、格式提示、示例填充、
- * 阈值滑条（-95..-125，默认 -110）、创建即带 pendingTask 跳转地图屏。
+ * 新建走测任务：
+ * - 目标参数「分别输入 - 保存」：可以一次只录一条，存进清单，清单里点一条作为本次任务目标；
+ * - 规格校验：不符合规格（编号越界、经纬度越界等）不让创建，红字说明原因；
+ * - 每个参数区都有圆圈感叹号，点开是给民警看的通俗说明。
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -66,9 +84,27 @@ fun NewTaskScreen(onBack: () -> Unit, onCreated: (String) -> Unit) {
     }
     var threshold by remember { mutableStateOf(AppGraph.pendingThresholdDbm.toFloat()) }
 
+    // 已保存的目标参数清单：只在「本次填写任务」内有效。
+    // 用户反馈「新建任务时上一个任务已保存的目标还在」→ 进入页面就清空，避免跨任务串参数。
+    var saved by remember { mutableStateOf<List<String>>(emptyList()) }
+    var selectedIdx by remember { mutableIntStateOf(-1) }
+    remember { saveSavedTargets(emptyList()) }
+
+    val validation = remember(input) { TaskInputParser.validate(input) }
     val parsed = remember(input) { TaskInputParser.parse(input) }
-    val target = parsed.target
-    val canCreate = target != null && name.isNotBlank()
+    val inputIsBlank = input.isBlank()
+    val canAdd = !inputIsBlank && validation.ok
+
+    val selectedRaw: String? = saved.getOrNull(selectedIdx)
+    val selectedValidation = remember(selectedRaw) {
+        selectedRaw?.let { TaskInputParser.validate(it) }
+    }
+    val selectedTarget: TargetCell? = remember(selectedRaw) {
+        selectedRaw?.let { TaskInputParser.parse(it).target }
+    }
+    val canCreate = selectedTarget != null &&
+        (selectedValidation?.ok == true) &&
+        name.isNotBlank()
 
     Column(
         Modifier
@@ -80,20 +116,24 @@ fun NewTaskScreen(onBack: () -> Unit, onCreated: (String) -> Unit) {
         Spacer(Modifier.height(6.dp))
 
         // ---------- 目标参数 ----------
-        SectionHeader("目标参数", modifier = Modifier.padding(horizontal = 20.dp))
+        SectionHeader(
+            "目标参数",
+            modifier = Modifier.padding(horizontal = 20.dp),
+            trailing = { HelpHint("目标参数怎么填", HelpTexts.targetParams) },
+        )
         GlassCard(Modifier.padding(horizontal = 20.dp)) {
             Column {
                 GlassTextField(
                     value = input,
                     onValueChange = { input = it },
-                    label = "粘贴上级提供的目标参数",
+                    label = "粘贴上级提供的一条目标参数",
                     placeholder = "例：ECI 123456789 或 31.2304 121.4737 R=800",
                     singleLine = false,
                     minLines = 2,
                     mono = true,
                 )
                 Spacer(Modifier.height(10.dp))
-                // 示例填充：FlowRow 自动换行，窄屏也不会把第 4 个 chip 裁在屏幕外
+                // 示例填充
                 FlowRow(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -104,28 +144,150 @@ fun NewTaskScreen(onBack: () -> Unit, onCreated: (String) -> Unit) {
                     GlassTextButton("LAC+CI 示例") { input = "LAC 12345 CI 67890" }
                     GlassTextButton("经纬度示例") { input = "31.2304 121.4737 R=800" }
                 }
+                Spacer(Modifier.height(12.dp))
+                // 规格校验结果（不通过就不给保存/创建）
+                if (!inputIsBlank) {
+                    if (validation.ok) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            StatusBadge("规格校验通过", WColors.Success)
+                            if (validation.warnings.isNotEmpty()) {
+                                Spacer(Modifier.width(8.dp))
+                                StatusBadge("有 ${validation.warnings.size} 条提醒", WColors.Warning)
+                            }
+                        }
+                        validation.warnings.forEach { w ->
+                            Spacer(Modifier.height(4.dp))
+                            Text("⚠ $w", style = MaterialTheme.typography.labelMedium, color = WColors.Warning)
+                        }
+                    } else {
+                        validation.blocking.forEach { e ->
+                            Text("✕ $e", style = MaterialTheme.typography.bodyMedium, color = WColors.Danger)
+                            Spacer(Modifier.height(2.dp))
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                }
+                GlowButton(
+                    text = if (canAdd) "保存到目标清单" else "修正参数后才能保存",
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = canAdd,
+                ) {
+                    val raw = input.trim()
+                    val exists = saved.any { it.trim() == raw }
+                    if (exists) {
+                        toast(ctx, "这条参数已经在清单里了")
+                        selectedIdx = saved.indexOfFirst { it.trim() == raw }
+                    } else {
+                        saved = saved + raw
+                        selectedIdx = saved.lastIndex
+                        saveSavedTargets(saved)
+                        toast(ctx, "已保存（共 ${saved.size} 条）")
+                    }
+                    input = ""
+                }
             }
         }
         Spacer(Modifier.height(12.dp))
 
-        // ---------- 解析结果 ----------
-        SectionHeader("解析结果", modifier = Modifier.padding(horizontal = 20.dp))
+        // ---------- 已保存的目标清单 ----------
+        SectionHeader(
+            "已保存的目标（${saved.size}）",
+            modifier = Modifier.padding(horizontal = 20.dp),
+            trailing = {
+                if (saved.isNotEmpty()) {
+                    GlassTextButton("清空") {
+                        saved = emptyList()
+                        selectedIdx = -1
+                        saveSavedTargets(saved)
+                    }
+                }
+            },
+        )
         GlassCard(Modifier.padding(horizontal = 20.dp)) {
             Column {
-                if (input.isBlank()) {
-                    Text("等待输入…", style = MonoText.style, color = WColors.OnBgDim)
-                } else if (target == null) {
+                if (saved.isEmpty()) {
                     Text(
-                        parsed.error ?: "无法识别该参数",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = WColors.Danger,
+                        "还没有保存的目标。输入一条参数后点上面的「保存到目标清单」，" +
+                            "上级给了几条就分几次存进来，再点一条作为本次走测目标。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = WColors.OnBgDim,
                     )
-                    if (parsed.normalized.isNotBlank()) {
-                        Spacer(Modifier.height(6.dp))
-                        Text(parsed.normalized, style = MonoText.style, color = WColors.OnBgDim, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    }
                 } else {
-                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    saved.forEachIndexed { idx, raw ->
+                        val v = TaskInputParser.validate(raw)
+                        val t = TaskInputParser.parse(raw).target
+                        val isSel = idx == selectedIdx
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 3.dp)
+                                .then(
+                                    if (isSel) {
+                                        Modifier
+                                            .background(WColors.Primary.copy(alpha = 0.10f), RoundedCornerShape(12.dp))
+                                            .border(1.dp, WColors.Primary.copy(alpha = 0.55f), RoundedCornerShape(12.dp))
+                                    } else {
+                                        Modifier
+                                    },
+                                )
+                                .clickable { selectedIdx = idx }
+                                .padding(horizontal = 10.dp, vertical = 9.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                if (isSel) Icons.Rounded.RadioButtonChecked else Icons.Rounded.RadioButtonUnchecked,
+                                contentDescription = null,
+                                tint = if (isSel) WColors.Primary else WColors.OnBgDim,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    t?.let { summaryOf(it) } ?: raw,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = if (v.ok) WColors.OnBg else WColors.Danger,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                if (!v.ok) {
+                                    Text(
+                                        v.blocking.firstOrNull().orEmpty(),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = WColors.Danger,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.width(6.dp))
+                            Icon(
+                                Icons.Rounded.Close,
+                                contentDescription = "从清单移除",
+                                tint = WColors.OnBgDim,
+                                modifier = Modifier
+                                    .size(20.dp)
+                                    .clickable {
+                                        saved = saved.filterIndexed { i, _ -> i != idx }
+                                        if (selectedIdx >= saved.size) selectedIdx = saved.lastIndex
+                                        saveSavedTargets(saved)
+                                    },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+
+        // ---------- 本次目标解析详情 ----------
+        SectionHeader("本次目标", modifier = Modifier.padding(horizontal = 20.dp))
+        GlassCard(Modifier.padding(horizontal = 20.dp)) {
+            Column {
+                val target = selectedTarget
+                if (target == null) {
+                    Text("在上面的清单里点一条作为本次走测目标", style = MonoText.style, color = WColors.OnBgDim)
+                } else {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
                         StatusBadge(formatLabel(target.format), WColors.Primary)
                         Spacer(Modifier.width(8.dp))
                         StatusBadge(
@@ -156,12 +318,6 @@ fun NewTaskScreen(onBack: () -> Unit, onCreated: (String) -> Unit) {
                         }
                     }
                     target.givenRadiusM?.let { KeyValueRow("参考半径", "%.0f 米".format(it)) }
-                    target.warnings.forEach { w ->
-                        Spacer(Modifier.height(4.dp))
-                        Text("⚠ $w", style = MaterialTheme.typography.labelMedium, color = WColors.Warning)
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    Text(parsed.normalized, style = MonoText.style, color = WColors.OnBgDim, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
             }
         }
@@ -182,17 +338,21 @@ fun NewTaskScreen(onBack: () -> Unit, onCreated: (String) -> Unit) {
         SectionHeader(
             "判定阈值",
             trailing = {
-                Text(
-                    "RSRP ≥ ${threshold.toInt()} dBm 记为有效覆盖",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = WColors.Primary,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "≥ ${threshold.toInt()} dBm 记为有效覆盖",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = WColors.Primary,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    HelpHint("信号强弱怎么算", HelpTexts.threshold)
+                }
             },
             modifier = Modifier.padding(horizontal = 20.dp),
         )
         GlassCard(Modifier.padding(horizontal = 20.dp)) {
             Column {
-                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("-125", style = MonoText.style, color = WColors.OnBgDim)
                     Spacer(Modifier.width(10.dp))
                     Slider(
@@ -227,7 +387,7 @@ fun NewTaskScreen(onBack: () -> Unit, onCreated: (String) -> Unit) {
                 .padding(horizontal = 20.dp),
             enabled = canCreate,
         ) {
-            val t = target ?: return@GlowButton
+            val t = selectedTarget ?: return@GlowButton
             val task = CoverageTask(
                 id = UUID.randomUUID().toString().take(8).uppercase(Locale.ROOT),
                 title = name.trim().ifBlank { "未命名任务" },
@@ -238,8 +398,48 @@ fun NewTaskScreen(onBack: () -> Unit, onCreated: (String) -> Unit) {
             AppGraph.pendingThresholdDbm = threshold.toInt()
             onCreated(task.id)
         }
+        if (!canCreate) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                when {
+                    selectedTarget == null -> "请先在「已保存的目标」里选一条"
+                    selectedValidation?.ok != true -> "所选参数不符合规格，请按红字提示修正"
+                    else -> "请填写任务名称"
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = WColors.OnBgDim,
+                modifier = Modifier.padding(horizontal = 24.dp),
+            )
+        }
         Spacer(Modifier.navigationBarsPadding().height(24.dp))
     }
+}
+
+/** 目标清单的一行摘要：格式 + 关键编号，列表里一行看清 */
+private fun summaryOf(t: TargetCell): String {
+    val head = when (t.format) {
+        TargetFormat.ECI -> "ECI ${t.eci}"
+        TargetFormat.NCI -> "NCI ${t.nci}"
+        TargetFormat.LAC_CI -> "LAC ${t.lac} · CI ${t.cid}"
+        TargetFormat.LATLON_RADIUS -> "%.5f, %.5f".format(t.centerLat ?: 0.0, t.centerLon ?: 0.0)
+    }
+    val mcc = t.mcc?.let { m -> " · $m-${t.mnc ?: "—"}" } ?: ""
+    return head + mcc
+}
+
+private const val PREF_SAVED_TARGETS = "saved_targets"
+private const val TARGET_SEP = "\u0001"
+
+/** 目标清单持久化：每条参数是单行文本，用不可见分隔符拼接，避免 JSON 依赖 */
+private fun loadSavedTargets(): List<String> {
+    val raw = AppGraph.prefs.getString(PREF_SAVED_TARGETS, "").orEmpty()
+    if (raw.isBlank()) return emptyList()
+    return raw.split(TARGET_SEP).map { it.trim() }.filter { it.isNotBlank() }
+}
+
+private fun saveSavedTargets(list: List<String>) {
+    val joined = list.map { it.replace("\n", " ").trim() }.filter { it.isNotBlank() }.joinToString(TARGET_SEP)
+    AppGraph.prefs.edit().putString(PREF_SAVED_TARGETS, joined).apply()
 }
 
 @Composable

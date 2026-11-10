@@ -54,13 +54,26 @@ import com.gakj.weilie.ui.theme.WColors
  */
 enum class DataSlot(val label: String) {
     TARGET("追踪目标"),
-    SIGNAL("信号强度"),
+    SIGNAL("服务小区信号"),
     SINR("信噪比"),
     NEIGHBORS("邻区数"),
     WIFI("WiFi 数"),
     COORDS("坐标"),
     DURATION("采集时长"),
     SAMPLES("样本计数"),
+}
+
+/**
+ * 追踪目标的命中态（@1 需求：主区命中 / 邻区命中 / 脱离）。
+ * 显示在「追踪目标」槽位，用来区分"目标命中"与"手机自身服务小区信号"。
+ */
+enum class TargetState(val label: String, private val argb: Long) {
+    HIT("命中目标", 0xFF22C55E),
+    NEIGHBOR("邻区命中", 0xFFF59E0B),
+    MISSING("未命中", 0xFF94A3B8),
+    NONE("未设目标", 0xFF64748B);
+
+    val color: Color get() = Color(argb.toInt())
 }
 
 /**
@@ -87,11 +100,14 @@ fun MapDataBar(
     durationText: String,
     sampleCount: Int,
     targetText: String,
+    targetState: TargetState = TargetState.NONE,
     // 普通模式内容
     carrierText: String,
     ratText: String,
     servingText: String?,
     neighborCis: List<String>,
+    /** 邻区为 0 时的原因提示（如 5G SA 下系统不提供邻区），空串不显示 */
+    neighborHint: String = "",
     confidenceText: String?,
     // 专家模式数据源
     snapshot: CellSnapshot?,
@@ -160,13 +176,13 @@ fun MapDataBar(
                 // ---------- 槽位区 ----------
                 if (!merged) {
                     SlotCell(slotTop, running, level, rsrpText, levelLabelText, sinrText,
-                        neighborsCount, wifiCount, coordsText, durationText, sampleCount, targetText,
+                        neighborsCount, wifiCount, coordsText, durationText, sampleCount, targetText, targetState,
                         rsrpHistory = rsrpHistory, showTrend = false, expertMode = expertMode) {
                         pickingSlot = slotTop
                     }
                     HorizontalDivider(color = WColors.GlassBorder)
                     SlotCell(slotBottom, running, level, rsrpText, levelLabelText, sinrText,
-                        neighborsCount, wifiCount, coordsText, durationText, sampleCount, targetText,
+                        neighborsCount, wifiCount, coordsText, durationText, sampleCount, targetText, targetState,
                         rsrpHistory = rsrpHistory, showTrend = true, expertMode = expertMode) {
                         pickingSlot = slotBottom
                     }
@@ -174,14 +190,14 @@ fun MapDataBar(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(Modifier.weight(1f)) {
                             SlotCell(slotTop, running, level, rsrpText, levelLabelText, sinrText,
-                                neighborsCount, wifiCount, coordsText, durationText, sampleCount, targetText,
+                                neighborsCount, wifiCount, coordsText, durationText, sampleCount, targetText, targetState,
                                 rsrpHistory = rsrpHistory, showTrend = false, expertMode = expertMode) {
                                 pickingSlot = slotTop
                             }
                         }
                         Box(Modifier.weight(1f)) {
                             SlotCell(slotBottom, running, level, rsrpText, levelLabelText, sinrText,
-                                neighborsCount, wifiCount, coordsText, durationText, sampleCount, targetText,
+                                neighborsCount, wifiCount, coordsText, durationText, sampleCount, targetText, targetState,
                                 rsrpHistory = rsrpHistory, showTrend = true, expertMode = expertMode) {
                                 pickingSlot = slotBottom
                             }
@@ -259,6 +275,7 @@ fun MapDataBar(
                                 levelLabelText = levelLabelText,
                                 showSignalRow = slotTop != DataSlot.SIGNAL && slotBottom != DataSlot.SIGNAL,
                                 neighborCis = neighborCis,
+                                neighborHint = neighborHint,
                                 showNeighborList = showNeighborList,
                                 onToggleNeighbors = { showNeighborList = !showNeighborList },
                                 confidenceText = confidenceText,
@@ -320,6 +337,7 @@ private fun SlotCell(
     durationText: String,
     sampleCount: Int,
     targetText: String,
+    targetState: TargetState,
     rsrpHistory: List<Int>,
     showTrend: Boolean,
     expertMode: Boolean = true,
@@ -337,7 +355,15 @@ private fun SlotCell(
         Text(slot.label, style = MaterialTheme.typography.labelSmall, color = WColors.OnBgDim)
         Spacer(Modifier.width(10.dp))
         when (slot) {
-            DataSlot.TARGET -> SlotValue(targetText)
+            DataSlot.TARGET -> {
+                SlotValue(targetText)
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    targetState.label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = targetState.color,
+                )
+            }
             DataSlot.SIGNAL -> {
                 if (showTrend) {
                     // 下槽 SIGNAL：趋势曲线（Basement.md：下半=信号趋势），替代静态信号条避免重复
@@ -420,6 +446,7 @@ private fun NormalContent(
     levelLabelText: String,
     showSignalRow: Boolean,
     neighborCis: List<String>,
+    neighborHint: String = "",
     showNeighborList: Boolean,
     onToggleNeighbors: () -> Unit,
     confidenceText: String?,
@@ -535,6 +562,15 @@ private fun NormalContent(
                     Text("· $ci", style = MonoText.style, color = WColors.OnBgDim)
                 }
             }
+        }
+        // 邻区为 0 这类「系统给不了」的情况，写清原因，别让用户以为是 App 坏了
+        if (neighborCis.isEmpty() && neighborHint.isNotBlank()) {
+            Text(
+                neighborHint,
+                style = MaterialTheme.typography.labelSmall,
+                color = WColors.OnBgDim,
+                modifier = Modifier.padding(top = 2.dp),
+            )
         }
 
         if (confidenceText != null) {

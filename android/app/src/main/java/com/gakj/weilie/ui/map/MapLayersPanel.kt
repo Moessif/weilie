@@ -5,6 +5,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -15,24 +18,34 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.gakj.weilie.core.fitting.AreaBuilder
+import com.gakj.weilie.core.fitting.TrackBufferArea
 import com.gakj.weilie.core.model.SampleRecord
+import com.gakj.weilie.ui.theme.MonoText
+import com.gakj.weilie.ui.common.HelpHint
+import com.gakj.weilie.ui.common.HelpTexts
 import com.gakj.weilie.ui.theme.WColors
 import com.gakj.weilie.ui.theme.glass
 import com.gakj.weilie.ui.theme.mapGlass
 import kotlin.math.atan2
 import kotlin.math.cos
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /**
@@ -60,6 +73,22 @@ fun MapLayersPanel(
     zoneVisible: Boolean = true,
     onTeammateToggle: (Boolean) -> Unit = {},
     onZoneToggle: (Boolean) -> Unit = {},
+    heatVisible: Boolean = false,
+    heatParams: HeatOverlayBuilder.Params = HeatOverlayBuilder.Params(),
+    onHeatToggle: (Boolean) -> Unit = {},
+    onHeatParams: (HeatOverlayBuilder.Params) -> Unit = {},
+    areaVisible: Boolean = false,
+    onAreaToggle: (Boolean) -> Unit = {},
+    areaMode: AreaBuilder.Mode = AreaBuilder.Mode.AUTO,
+    onAreaModeChange: (AreaBuilder.Mode) -> Unit = {},
+    areaBufferRadiusM: Double = 30.0,
+    onAreaBufferRadius: (Double) -> Unit = {},
+    areaBufferShape: TrackBufferArea.Shape = TrackBufferArea.Shape.CIRCLE,
+    onAreaBufferShape: (TrackBufferArea.Shape) -> Unit = {},
+    libraryVisible: Boolean = false,
+    libraryCount: Int = 0,
+    onLibraryToggle: (Boolean) -> Unit = {},
+    onLibrarySearch: () -> Unit = {},
     onDismiss: () -> Unit,
 ) {
     Box(
@@ -72,6 +101,10 @@ fun MapLayersPanel(
             Modifier
                 .padding(start = 12.dp)
                 .width(252.dp)
+                // 叠加图层越加越多（热力参数 5 个滑杆 + 封闭区域成面方式 + 基站库），
+                // 超出屏高时整块面板会被裁掉、下面的选项点不到 → 限制高度并允许滚动
+                .heightIn(max = (LocalConfiguration.current.screenHeightDp.dp - 140.dp))
+                .verticalScroll(rememberScrollState())
                 // 先铺一层近不透明底，避免浮层压在数据栏上时底层文字透出叠字
                 .background(WColors.Bg1.copy(alpha = 0.97f), RoundedCornerShape(18.dp))
                 .mapGlass(RoundedCornerShape(18.dp))
@@ -131,6 +164,171 @@ fun MapLayersPanel(
                 LayerToggleRow("队友位置", teammateVisible, onTeammateToggle)
                 LayerToggleRow("任务范围", zoneVisible, onZoneToggle)
             }
+
+            // ---- 叠加图层（需求 6 / 8）：独立开关，不占主图层单选 ----
+            Spacer(Modifier.height(10.dp))
+            Text("叠加图层", style = MaterialTheme.typography.labelSmall, color = WColors.OnBgDim)
+            LayerToggleRow("信号热力图", heatVisible, onHeatToggle)
+            if (heatVisible) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(start = 2.dp, bottom = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "热力图参数",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = WColors.OnBgDim,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    HelpHint("热力图参数怎么看", HelpTexts.heatParams)
+                }
+                HeatParamSlider(
+                    label = "网格间隔",
+                    valueText = "${heatParams.cellMeters.roundToInt()} m",
+                    value = heatParams.cellMeters.toFloat(),
+                    range = 5f..60f,
+                    onChange = { onHeatParams(heatParams.copy(cellMeters = it.toDouble())) },
+                )
+                HeatParamSlider(
+                    label = "扩散半径",
+                    valueText = "${heatParams.radiusM.roundToInt()} m",
+                    value = heatParams.radiusM.toFloat(),
+                    range = 10f..200f,
+                    onChange = { onHeatParams(heatParams.copy(radiusM = it.toDouble())) },
+                )
+                HeatParamSlider(
+                    label = "透明度",
+                    valueText = "${(heatParams.alpha * 100 / 255)}%",
+                    value = heatParams.alpha.toFloat(),
+                    range = 30f..255f,
+                    onChange = { onHeatParams(heatParams.copy(alpha = it.roundToInt())) },
+                )
+                    // 需求 6：强/中/弱阈值可配（强阈值以上青绿，弱阈值以下橙红，中间黄）
+                    HeatParamSlider(
+                        label = "强信号阈值",
+                        valueText = "${heatParams.strongDbm.roundToInt()} dBm",
+                        value = heatParams.strongDbm.toFloat(),
+                        range = -110f..-60f,
+                        onChange = {
+                            onHeatParams(heatParams.copy(strongDbm = it.toDouble().coerceAtLeast(heatParams.weakDbm + 5.0)))
+                        },
+                    )
+                    HeatParamSlider(
+                        label = "弱信号阈值",
+                        valueText = "${heatParams.weakDbm.roundToInt()} dBm",
+                        value = heatParams.weakDbm.toFloat(),
+                        range = -125f..-80f,
+                        onChange = {
+                            onHeatParams(heatParams.copy(weakDbm = it.toDouble().coerceAtMost(heatParams.strongDbm - 5.0)))
+                        },
+                    )
+            }
+            LayerToggleRow("实测封闭区域", areaVisible, onAreaToggle)
+            if (areaVisible) {
+                // 成面方式：高精度凹包 vs 以轨迹点画圆/方的「模拟实测区域」
+                Column(Modifier.fillMaxWidth().padding(start = 2.dp)) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(top = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "成面方式",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = WColors.OnBgDim,
+                            modifier = Modifier.weight(1f),
+                        )
+                        AreaBuilder.Mode.entries.forEach { m ->
+                            val on = m == areaMode
+                            Text(
+                                m.label,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (on) WColors.OnPrimary else WColors.OnBgDim,
+                                modifier = Modifier
+                                    .padding(start = 4.dp)
+                                    .background(
+                                        if (on) WColors.Primary else WColors.ChipBg,
+                                        RoundedCornerShape(8.dp),
+                                    )
+                                    .clickable { onAreaModeChange(m) }
+                                    .padding(horizontal = 6.dp, vertical = 3.dp),
+                            )
+                        }
+                    }
+                    if (areaMode == AreaBuilder.Mode.SIMULATED) {
+                        Text(
+                            "走到哪儿就把那儿画成实测区域；圆/方块越大，覆盖范围越宽",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = WColors.OnBgDim.copy(alpha = 0.7f),
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                        HeatParamSlider(
+                            label = "圆/方块大小",
+                            valueText = "±${areaBufferRadiusM.roundToInt()} m",
+                            value = areaBufferRadiusM.toFloat(),
+                            range = 5f..200f,
+                            onChange = { onAreaBufferRadius(it.toDouble()) },
+                        )
+                        Row(Modifier.fillMaxWidth().padding(bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "形状",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = WColors.OnBgDim,
+                                modifier = Modifier.weight(1f),
+                            )
+                            TrackBufferArea.Shape.entries.forEach { s ->
+                                val on = s == areaBufferShape
+                                Text(
+                                    s.label,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (on) WColors.OnPrimary else WColors.OnBgDim,
+                                    modifier = Modifier
+                                        .padding(start = 4.dp)
+                                        .background(
+                                            if (on) WColors.Primary else WColors.ChipBg,
+                                            RoundedCornerShape(8.dp),
+                                        )
+                                        .clickable { onAreaBufferShape(s) }
+                                        .padding(horizontal = 8.dp, vertical = 3.dp),
+                                )
+                            }
+                        }
+                    } else {
+                        Text(
+                            "贴合实际轨迹形状；点太少或共线时会退化成沿线带",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = WColors.OnBgDim.copy(alpha = 0.7f),
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                    }
+                }
+            }
+
+            // ---- 基站位置库（OpenCelliD 众包坐标）：参考图层，不是"全部基站" ----
+            Spacer(Modifier.height(6.dp))
+            LayerToggleRow("基站库（OpenCelliD）", libraryVisible, onLibraryToggle)
+            if (libraryVisible) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(start = 2.dp)
+                        .clickable { onLibrarySearch() },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        if (libraryCount > 0) "范围内 $libraryCount 个 · 点此重新查询" else "点此查询基站位置",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = WColors.Primary,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                Text(
+                    "众包数据，坐标约百米量级 · OpenCelliD CC BY-SA 4.0",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = WColors.OnBgDim.copy(alpha = 0.75f),
+                )
+            }
         }
     }
 }
@@ -147,6 +345,35 @@ private fun LayerToggleRow(label: String, checked: Boolean, onChange: (Boolean) 
             onCheckedChange = onChange,
             colors = SwitchDefaults.colors(checkedTrackColor = WColors.Primary),
             modifier = Modifier.height(26.dp),
+        )
+    }
+}
+
+@Composable
+private fun HeatParamSlider(
+    label: String,
+    valueText: String,
+    value: Float,
+    range: ClosedFloatingPointRange<Float>,
+    onChange: (Float) -> Unit,
+) {
+    Column(Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(label, style = MaterialTheme.typography.labelSmall, color = WColors.OnBgDim, modifier = Modifier.weight(1f))
+            Text(valueText, style = MonoText.style.copy(fontSize = 10.sp), color = WColors.Primary)
+        }
+        Slider(
+            value = value.coerceIn(range.start, range.endInclusive),
+            onValueChange = onChange,
+            valueRange = range,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(20.dp),
+            colors = SliderDefaults.colors(
+                thumbColor = WColors.Primary,
+                activeTrackColor = WColors.Primary,
+                inactiveTrackColor = WColors.GlassBorder,
+            ),
         )
     }
 }

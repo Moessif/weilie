@@ -199,6 +199,7 @@ private const val GEO_REFRESH_MS = 30_000L
  * @param currentLon 当前经度
  * @param hasFix 是否拿到可信定位；false 时水印尾部加黄字提示
  * @param onCaptured 拍照并落盘成功后的回调（调用方负责导航/刷新）
+ * @param taskId 照片归属的任务 id（单人=task.id，多人="room-<roomId>"）；用于「换任务不显示旧标点」
  */
 @Composable
 fun PhotoCameraScreen(
@@ -206,6 +207,7 @@ fun PhotoCameraScreen(
     currentLat: Double,
     currentLon: Double,
     hasFix: Boolean,
+    taskId: String = "",
     onClose: () -> Unit,
     onCaptured: (PhotoRecord) -> Unit,
     onOpenGallery: () -> Unit = {},
@@ -565,6 +567,7 @@ fun PhotoCameraScreen(
                                     lat = currentLat,
                                     lon = currentLon,
                                     note = note,
+                                    taskId = taskId,
                                 )
                             }
                             mainHandler.post {
@@ -1185,6 +1188,7 @@ private fun savePhoto(
     lat: Double,
     lon: Double,
     note: String,
+    taskId: String = "",
 ): PhotoRecord {
     val decoded = decodeJpegBytes(bytes, 1600) ?: error("照片解码失败")
     val upright = rotateBitmap(decoded, rotationDegrees)
@@ -1205,6 +1209,7 @@ private fun savePhoto(
         lon = lon,
         file = file.name,
         lines = lines,
+        taskId = taskId,
     )
     AppGraph.photoStore.add(record)
     return record

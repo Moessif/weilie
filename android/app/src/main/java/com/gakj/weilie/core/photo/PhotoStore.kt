@@ -29,6 +29,8 @@ data class PhotoRecord(
     val lines: List<String> = emptyList(),
     /** 关联的地图标点 id（WsMsg.Marker.photoId） */
     val markerId: String = "",
+    /** 归属任务 id（单人 task.id / 多人 "room-<roomId>"）；老记录为空，按拍摄时间兜底归属 */
+    val taskId: String = "",
 ) {
     /** 地图上显示的标题：可疑设备优先显示类型（deviceType 是内部枚举码，必须翻成中文再展示） */
     val title: String
@@ -38,9 +40,15 @@ data class PhotoRecord(
             else -> "取证照片"
         }
 
-    private fun deviceTypeLabel(code: String): String = when (code) {
-        "HIDDEN_CAMERA" -> "隐蔽摄像头"
-        "SUSPICIOUS_CAMERA" -> "可疑摄像头"
+    /**
+     * 设备类型编码 → 中文。
+     * 兼容两套历史编码：相机芯片写的是 `HIDDEN_CAM` / `SUSPICIOUS_CAM`，
+     * 早期版本与服务端登记里出现过 `HIDDEN_CAMERA` / `SUSPICIOUS_CAMERA`，
+     * 只认其中一套会让「可疑摄像头」的标题回落成「可疑设备」（真机反馈）。
+     */
+    private fun deviceTypeLabel(code: String): String = when (code.uppercase()) {
+        "HIDDEN_CAM", "HIDDEN_CAMERA" -> "隐蔽摄像头"
+        "SUSPICIOUS_CAM", "SUSPICIOUS_CAMERA" -> "可疑摄像头"
         "SUSPICIOUS_DEVICE" -> "可疑设备"
         "OTHER" -> "其他"
         else -> if (code.all { it.code > 127 }) code else "其他可疑设备"

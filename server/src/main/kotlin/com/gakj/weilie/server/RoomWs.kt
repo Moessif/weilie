@@ -172,6 +172,9 @@ fun Route.roomWsRoutes(store: RoomStore) {
                                     note = msg.note,
                                     ts = msg.ts,
                                     photoId = msg.photoId,
+                                    // 照片标点由服务器分配稳定 id：客户端要能按 id 删除它
+                                    id = "ph-" + msg.photoId,
+                                    photoCode = msg.code,
                                 )
                             )
                             log.info("照片落标 room={} userId={} photoId={}", room.roomId, msg.userId, msg.photoId)
@@ -182,8 +185,26 @@ fun Route.roomWsRoutes(store: RoomStore) {
 
                     is WsMsg.Marker -> {
                         // QA-06：标记入库后广播完整 state（客户端会丢弃 marker 帧，只有 state 能让各端地图刷新）
-                        room.markers.add(msg)
+                        // 老客户端手动标点不带 id → 服务器补一个稳定 id，否则「删除标点」按 id 匹配永远失败
+                        val stored = if (msg.id.isBlank()) {
+                            msg.copy(id = "m-" + System.nanoTime().toString(36))
+                        } else {
+                            msg
+                        }
+                        room.markers.add(stored)
                         broadcastState(room)
+                    }
+
+                    is WsMsg.MarkerDelete -> {
+                        // 标点只能由创建者本人或队长删除；删完广播 state
+                        val isCaptain = (room.captainUserId == null || room.captainUserId == msg.by)
+                        val removed = room.markers.removeAll {
+                            it.id == msg.id && (it.by == msg.by || isCaptain)
+                        }
+                        if (removed) {
+                            log.info("删除标点 room={} id={} by={}", room.roomId, msg.id, msg.by)
+                            broadcastState(room)
+                        }
                     }
 
                     is WsMsg.Zone -> {
@@ -288,18 +309,29 @@ private suspend fun unregister(
     }
 }
 
-/** 构造并广播 state（成员列表 / zones / markers / 聊天历史），成员按 userId 排序保证输出稳定 */
+/**
+ * 构造并广播 state（成员列表 / zones / markers / 聊天历史），成员按 userId 排序保证输出稳定。
+ *
+ * 标点可见性（需求二）：visibleTo 为空 = 全队可见；非空时只发给列表里的人 + 创建者本人，
+ * 所以这里按会话逐个构造 state，而不是一份 state 广播给所有人。
+ */
 private suspend fun broadcastState(room: RoomState) {
-    @Suppress("DEPRECATION")
-    val state = WsMsg.State(
-        roomId = room.roomId,
-        members = room.members.values.sortedBy { it.userId },
-        zones = room.zones.toList(),
-        zone = room.zones.lastOrNull() ?: room.zone,
-        markers = room.markers.toList(),
-        chats = room.chats.toList(),
-    )
-    broadcast(room, encodeMsg(state))
+    val members = room.members.values.sortedBy { it.userId }
+    room.sessions.forEach { (uid, session) ->
+        val visibleMarkers = room.markers.filter { m ->
+            m.visibleTo.isEmpty() || m.by == uid || m.visibleTo.contains(uid)
+        }
+        @Suppress("DEPRECATION")
+        val state = WsMsg.State(
+            roomId = room.roomId,
+            members = members,
+            zones = room.zones.toList(),
+            zone = room.zones.lastOrNull() ?: room.zone,
+            markers = visibleMarkers,
+            chats = room.chats.toList(),
+        )
+        sendToSession(session, encodeMsg(state))
+    }
 }
 
 /** 聊天入历史（QA-12）：超过上限时淘汰最旧的一条，保证列表有界 */

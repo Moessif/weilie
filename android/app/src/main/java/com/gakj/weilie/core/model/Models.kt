@@ -152,6 +152,8 @@ data class TargetCell(
     val cid: Long? = null,
     val mcc: String? = null,
     val mnc: String? = null,
+    /** 目标 PCI（可选）：邻区没有 CI 时用 PCI + MCC/MNC 做指纹匹配 */
+    val pci: Int? = null,
     val centerLat: Double? = null,
     val centerLon: Double? = null,
     val givenRadiusM: Double? = null,

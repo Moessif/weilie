@@ -7,8 +7,10 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -76,12 +78,14 @@ fun Modifier.mapGlass(shape: Shape = RoundedCornerShape(20.dp), filled: Boolean 
         )
 }
 
-/** 玻璃卡片容器（带按压缩放反馈） */
+/** 玻璃卡片容器（带按压缩放反馈）；给 [onLongClick] 时支持长按 */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun GlassCard(
     modifier: Modifier = Modifier,
     shape: Shape = RoundedCornerShape(20.dp),
     onClick: (() -> Unit)? = null,
+    onLongClick: (() -> Unit)? = null,
     onMap: Boolean = false,
     content: @Composable () -> Unit,
 ) {
@@ -97,8 +101,16 @@ fun GlassCard(
             .scale(scale)
             .then(if (onMap) Modifier.mapGlass(shape) else Modifier.glass(shape))
             .then(
-                if (onClick != null) Modifier.clickable(interactionSource = interaction, indication = null) { onClick() }
-                else Modifier,
+                when {
+                    onLongClick != null -> Modifier.combinedClickable(
+                        interactionSource = interaction,
+                        indication = null,
+                        onClick = { onClick?.invoke() },
+                        onLongClick = { onLongClick.invoke() },
+                    )
+                    onClick != null -> Modifier.clickable(interactionSource = interaction, indication = null) { onClick() }
+                    else -> Modifier
+                },
             )
             .padding(16.dp),
     ) { content() }

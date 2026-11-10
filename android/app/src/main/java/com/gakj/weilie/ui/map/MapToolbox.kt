@@ -48,6 +48,8 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -74,6 +76,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.roundToInt
+import com.gakj.weilie.ui.common.HelpHint
+import com.gakj.weilie.ui.common.HelpTexts
 import com.gakj.weilie.ui.theme.MonoText
 import com.gakj.weilie.ui.theme.SectionHeader
 import com.gakj.weilie.ui.theme.WColors
@@ -127,8 +132,16 @@ fun ToolboxSheet(
     inlineTool: ToolId?,
     vib: Boolean,
     cellAlert: Boolean,
+    silent: Boolean,
+    silentStateText: String,
+    silentAvailable: Boolean = true,
+    silentStrength: Int = 3,
+    sampleIntervalMs: Long,
     onVib: (Boolean) -> Unit,
     onCellAlert: (Boolean) -> Unit,
+    onSilent: (Boolean) -> Unit,
+    onSilentStrength: (Int) -> Unit = {},
+    onSampleInterval: (Long) -> Unit,
     onTool: (ToolId) -> Unit,
     onSimpleTool: (ToolId) -> Unit,
     onInlineBack: () -> Unit,
@@ -216,6 +229,100 @@ fun ToolboxSheet(
                         .background(WColors.ChipBg, RoundedCornerShape(10.dp))
                         .padding(horizontal = 10.dp, vertical = 5.dp),
                 )
+            }
+
+            // ---------- 静默跟踪（需求 10）+ 打点间隔（需求 1）----------
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp)
+                    .background(WColors.ChipBg, RoundedCornerShape(12.dp))
+                    .padding(start = 12.dp, end = 8.dp, top = 4.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "静默跟踪",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (silent) WColors.Primary else WColors.OnBg,
+                        )
+                        Spacer(Modifier.width(5.dp))
+                        HelpHint("振动逻辑说明", HelpTexts.silentTrack)
+                    }
+                    Text(
+                        if (silent) silentStateText
+                        else if (!silentAvailable) "经纬度任务无法判定命中态"
+                        else "只震动不发声 · 后台保活",
+                        style = MonoText.style.copy(fontSize = 10.sp),
+                        color = if (silent) WColors.Primary else WColors.OnBgDim,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                listOf(1_000L to "1s", 2_000L to "2s", 5_000L to "5s").forEach { (ms, label) ->
+                    val on = sampleIntervalMs == ms
+                    Box(
+                        Modifier
+                            .padding(end = 4.dp)
+                            .background(
+                                if (on) WColors.Primary.copy(alpha = 0.18f) else Color.Transparent,
+                                RoundedCornerShape(8.dp),
+                            )
+                            .clickable { onSampleInterval(ms) }
+                            .padding(horizontal = 7.dp, vertical = 3.dp),
+                    ) {
+                        Text(
+                            label,
+                            style = MonoText.style.copy(fontSize = 10.sp),
+                            color = if (on) WColors.Primary else WColors.OnBgDim,
+                        )
+                    }
+                }
+                Switch(
+                    checked = silent,
+                    onCheckedChange = if (silentAvailable) onSilent else null,
+                    enabled = silentAvailable,
+                    colors = SwitchDefaults.colors(checkedTrackColor = WColors.Primary),
+                    modifier = Modifier.height(26.dp),
+                )
+            }
+
+            // 需求四：振动强度可调（1 轻 / 3 中 / 5 强），立即生效并记住
+            if (silent) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 2.dp, start = 2.dp, end = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "震动强度",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = WColors.OnBgDim,
+                    )
+                    Slider(
+                        value = silentStrength.toFloat(),
+                        onValueChange = { onSilentStrength(it.roundToInt().coerceIn(1, 5)) },
+                        valueRange = 1f..5f,
+                        steps = 3,
+                        colors = SliderDefaults.colors(
+                            thumbColor = WColors.Primary,
+                            activeTrackColor = WColors.Primary,
+                            inactiveTrackColor = WColors.GlassBorder,
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(horizontal = 6.dp)
+                            .height(28.dp),
+                    )
+                    Text(
+                        strengthLabel(silentStrength),
+                        style = MonoText.style.copy(fontSize = 10.sp),
+                        color = WColors.Primary,
+                        modifier = Modifier.width(26.dp),
+                    )
+                }
             }
 
             // ---------- A2 展开：数据显示区方案（上下两半 / 仅折线 / 仅信息）----------
@@ -614,9 +721,15 @@ fun GlassPanelDialog(
 
 /** 浮窗内一行操作（导出/导航面板用） */
 @Composable
-fun PanelActionRow(text: String, enabled: Boolean = true, icon: ImageVector? = null, onClick: () -> Unit) {
+fun PanelActionRow(
+    text: String,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    icon: ImageVector? = null,
+    onClick: () -> Unit,
+) {
     Row(
-        Modifier
+        modifier
             .fillMaxWidth()
             .background(if (enabled) WColors.ChipBg else WColors.ChipBg.copy(alpha = 0.25f), RoundedCornerShape(12.dp))
             .clickable(enabled = enabled, onClick = onClick)
@@ -635,4 +748,12 @@ fun PanelActionRow(text: String, enabled: Boolean = true, icon: ImageVector? = n
         )
         Text("›", style = MaterialTheme.typography.titleMedium, color = WColors.OnBgDim)
     }
+}
+
+private fun strengthLabel(level: Int): String = when (level.coerceIn(1, 5)) {
+    1 -> "轻"
+    2 -> "较轻"
+    3 -> "中"
+    4 -> "较强"
+    else -> "强"
 }

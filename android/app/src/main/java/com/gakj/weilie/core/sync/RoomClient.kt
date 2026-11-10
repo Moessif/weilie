@@ -208,6 +208,15 @@ class RoomClient(
     suspend fun chat(text: String, userId: String, name: String) =
         send(WsMsg.Chat(userId, name, text, System.currentTimeMillis()))
 
+    /**
+     * 插标点。
+     *
+     * @param name 记录人昵称（byName）
+     * @param markerName 标点名称（民警自己起名，如「3 号楼配电房」），可空
+     * @param visibleTo 可见范围：空 = 全队可见；非空 = 只有这些 userId（加自己）能看到
+     */
+    private fun newMarkerId(): String = "mk-" + System.currentTimeMillis() + "-" + (0..999).random()
+
     suspend fun marker(
         lat: Double,
         lon: Double,
@@ -217,9 +226,30 @@ class RoomClient(
         name: String,
         photoId: String = "",
         deviceType: String = "",
+        markerName: String = "",
+        visibleTo: List<String> = emptyList(),
     ) = send(
-        WsMsg.Marker(userId, name, lat, lon, kind, note, System.currentTimeMillis(), photoId, deviceType),
+        WsMsg.Marker(
+            by = userId,
+            byName = name,
+            lat = lat,
+            lon = lon,
+            kind = kind,
+            note = note,
+            ts = System.currentTimeMillis(),
+            photoId = photoId,
+            deviceType = deviceType,
+            id = newMarkerId(),
+            name = markerName,
+            visibleTo = visibleTo,
+        ),
     )
+
+    /** 删除标点（服务端会校验：只有创建者本人或队长能删） */
+    suspend fun deleteMarker(id: String, userId: String) {
+        if (id.isBlank()) return
+        send(WsMsg.MarkerDelete(id, userId))
+    }
 
     /** 拍照打点：把取证照片（photoId 来自 PhotoRecord.id）登记到房间，供其他人点标点翻图 */
     suspend fun photo(marker: WsMsg.Marker) {
@@ -233,6 +263,7 @@ class RoomClient(
                 note = marker.note,
                 kind = marker.kind,
                 ts = marker.ts,
+                code = marker.photoCode,
             ),
         )
     }

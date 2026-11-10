@@ -52,11 +52,28 @@ object CoverageFitter {
         val cellMeters: Double = 12.0,
         val maxAccuracyM: Double = 60.0,
         val minSamples: Int = 8,
+        /** 凹包 alpha（米）；0 = 按点间距自适应 */
+        val alphaM: Double = 0.0,
+        /**
+         * 生成边界时抬高的一档余量（dB）：只用比阈值更强的点围边，
+         * 把"极限弱点"排除在外，避免弱信号把面积撑出尖角（需求 3.1）。
+         */
+        val weakMarginDb: Double = 3.0,
     )
 
     fun fit(samples: List<SampleRecord>, opt: Options = Options()): CoverageResult? {
-        if (samples.size < opt.minSamples) return null
-        val usable = samples.filter { it.rsrp != null && it.accuracyM == null || (it.rsrp != null && (it.accuracyM ?: 0f) <= opt.maxAccuracyM) }
+        // 先剔飞点/粗定位点：单个坏点就能把凹包撑到城市尺度（真机反馈「一大片异常覆盖」）
+        val clean = TrackSanity.saneSamples(samples)
+        // 需求 1.1/3.1：空心点（脱离目标基站范围）不参与范围与面积计算，
+        // 邻区点也要满足信号门槛才算有效实心点。
+        val areaSamples = clean.filter {
+            AreaBuilder.isValidPoint(it, opt.thresholdDbm.roundToInt()) && it.rsrp != null
+        }
+        // 兜底：老会话/导入数据可能没写 onTarget/targetSeen 标记，此时按「全部点」拟合，
+        // 否则会把整场走测判成空；只有标记有效点够用时才真正剔除空心点。
+        val basisPool = if (areaSamples.size >= opt.minSamples) areaSamples else clean.filter { it.rsrp != null }
+        if (basisPool.size < opt.minSamples) return null
+        val usable = basisPool.filter { it.accuracyM == null || it.accuracyM <= opt.maxAccuracyM }
         if (usable.size < opt.minSamples) return null
 
         val lat0 = usable.map { it.lat }.average()
@@ -65,12 +82,22 @@ object CoverageFitter {
             Triple(Geo.toLocal(s.lat, s.lon, lat0, lon0), s.rsrp!!.toDouble(), (s.accuracyM ?: 10f).toDouble())
         }
         val fitSamples = local.map { (p, rsrp, acc) -> FitSample(p, rsrp, acc) }
-        val inliers = fitSamples.filter { it.rsrp >= opt.thresholdDbm }
-        val basis = if (inliers.size >= 3) inliers else fitSamples
-
-        val hull = ConvexHull.hull(basis.map { it.p })
-        if (hull.size < 3) return null
         val meanAcc = fitSamples.map { it.accuracyM }.average().takeIf { !it.isNaN() } ?: 10.0
+        // inlierCount 保持"信号≥阈值的点数"这一统计口径（界面展示用）；
+        // 真正围边只用再高一档（weakMarginDb）的强点，弱边缘点不参与撑面积（需求 3.1）。
+        val inliers = fitSamples.filter { it.rsrp >= opt.thresholdDbm }
+        val strong = inliers.filter { it.rsrp >= opt.thresholdDbm + opt.weakMarginDb }
+        val basis = if (strong.size >= 3) strong else inliers
+
+        // 凹包（Alpha Shape）优先：比凸包更贴合真实走测（L 形/环形）；失败才回退凸包
+        val basisPts = basis.map { it.p }
+        val alpha = if (opt.alphaM > 0.0) opt.alphaM else AlphaShape.adaptiveAlpha(basisPts)
+        val rawHull = AlphaShape.hull(basisPts, AlphaShape.Options(alphaM = alpha))
+            .ifEmpty { ConvexHull.hull(basisPts) }
+        if (rawHull.size < 3) return null
+        // 抽稀去毛刺（Douglas–Peucker），再外挂不确定缓冲带
+        val hull = PolylineSimplify.simplifyRing(rawHull, (meanAcc * 0.4).coerceIn(1.5, 8.0))
+            .takeIf { it.size >= 3 } ?: rawHull
         val buffered = PolygonBuffer.buffer(hull, opt.bufferMeters + meanAcc * 0.5)
 
         val grid = IdwInterpolator.build(fitSamples, cellMeters = opt.cellMeters)

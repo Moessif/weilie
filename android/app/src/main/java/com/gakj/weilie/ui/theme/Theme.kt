@@ -257,12 +257,18 @@ private fun onColorFor(bg: Color): Color =
  * 应用一套主题：全应用所有颜色都从这里刷写，是调色板的唯一外部写入口。
  * @param systemDark 系统当前是否深色（[ThemeMode.SYSTEM] 时生效）
  */
+/** 主题规格是否落在深色（SYSTEM 跟随系统）。系统栏图标、窗口底色都按这个值切。 */
+fun resolveDark(
+    @Suppress("UNUSED_PARAMETER") spec: ThemeSpec,
+    @Suppress("UNUSED_PARAMETER") systemDark: Boolean,
+): Boolean {
+    // 产品决策（用户 2026-11-10）：取消浅色模式，只保留深色模式。
+    // 旧 prefs 里可能还存着 LIGHT/SYSTEM，读出来一律按深色渲染，避免升级后界面变形。
+    return true
+}
+
 fun applyTheme(spec: ThemeSpec, systemDark: Boolean) {
-    val dark = when (spec.mode) {
-        ThemeMode.SYSTEM -> systemDark
-        ThemeMode.LIGHT -> false
-        ThemeMode.DARK -> true
-    }
+    val dark = resolveDark(spec, systemDark)
     WColors.writeBase(dark)
     WColors.writeAccent(spec, dark)
 }
@@ -338,11 +344,9 @@ object ThemeController {
 
     private fun readPrefs(): ThemeSpec {
         val p = AppGraph.prefs
-        val mode = runCatching {
-            ThemeMode.valueOf(p.getString(Route.PREF_THEME_MODE, null).orEmpty())
-        }.getOrDefault(ThemeMode.DARK)
+        // 只保留深色模式：历史版本可能存过 LIGHT/SYSTEM，这里不再读取，统一按深色
         return ThemeSpec(
-            mode = mode,
+            mode = ThemeMode.DARK,
             accent = p.getInt(Route.PREF_THEME_ACCENT, DEFAULT_ACCENT),
             hue = p.getFloat(Route.PREF_THEME_HUE, -1f),
             sat = p.getFloat(Route.PREF_THEME_SAT, 1f),
@@ -384,11 +388,7 @@ fun WeilieTheme(content: @Composable () -> Unit) {
     val systemDark = isSystemInDarkTheme()
     // 组合成功后再刷调色板：改设置/系统切明暗都会走到这里（同值写入不会引发额外重组）
     SideEffect { applyTheme(spec, systemDark) }
-    val dark = when (spec.mode) {
-        ThemeMode.SYSTEM -> systemDark
-        ThemeMode.LIGHT -> false
-        ThemeMode.DARK -> true
-    }
+    val dark = resolveDark(spec, systemDark)
     MaterialTheme(
         colorScheme = buildScheme(dark),
         typography = AppTypography,

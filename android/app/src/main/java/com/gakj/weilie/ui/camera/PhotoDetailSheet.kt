@@ -24,12 +24,17 @@ import androidx.compose.material.icons.rounded.Cancel
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.RemoveCircleOutline
+import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -44,6 +49,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -57,6 +63,7 @@ import com.gakj.weilie.ui.common.fmtTs
 import com.gakj.weilie.ui.team.QrCodeImage
 import com.gakj.weilie.ui.theme.GlowButton
 import com.gakj.weilie.ui.theme.WColors
+import com.gakj.weilie.core.verify.RemotePhoto
 import com.gakj.weilie.ui.theme.glass
 import java.io.File
 import java.text.SimpleDateFormat
@@ -67,22 +74,29 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * 取证照片详情（地图标点 / 相册点开时弹出）。
- *
- * 数据来自 [AppGraph.photoStore]：record 里带坐标、水印行、可疑设备类型，
- * 大图按 [com.gakj.weilie.core.photo.PhotoStore.fileOf] 约定回查；图片文件被删也不崩，显示占位。
+ * 取证照片详情（本机记录 / 跨设备远程记录）。
  *
  * @param photoId PhotoRecord.id
+ * @param remoteCode 跨设备查看时的 8 位验证码（本机没有原件时按它向服务器查登记信息）
+ * @param onDelete 非空时显示「从地图移除该标点」——删除的是地图/房间里的标点，照片本身保留
  * @param onClose 关闭 / 下滑 dismiss
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PhotoDetailSheet(photoId: String, onClose: () -> Unit) {
+fun PhotoDetailSheet(
+    photoId: String,
+    remoteCode: String = "",
+    onDelete: (() -> Unit)? = null,
+    onClose: () -> Unit,
+) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var loading by remember(photoId) { mutableStateOf(true) }
     var record by remember(photoId) { mutableStateOf<PhotoRecord?>(null) }
     var photo by remember(photoId) { mutableStateOf<Bitmap?>(null) }
     var missing by remember(photoId) { mutableStateOf(false) }
+    // 跨设备：本机没有照片原件时按验真码向服务器查登记信息
+    var remote by remember(photoId, remoteCode) { mutableStateOf<RemotePhoto?>(null) }
+    var remoteError by remember(photoId, remoteCode) { mutableStateOf("") }
 
     LaunchedEffect(photoId) {
         val loaded = withContext(Dispatchers.IO) {
@@ -99,6 +113,12 @@ fun PhotoDetailSheet(photoId: String, onClose: () -> Unit) {
                 }
             }
             missing = photo == null
+        }
+
+        if (loaded == null && remoteCode.isNotBlank()) {
+            val info = runCatching { AppGraph.photoVerifier.lookup(remoteCode) }.getOrNull()
+            remote = info
+            if (info == null) remoteError = "查不到该验证码的登记信息（可能离线或已过期）"
         }
         loading = false
     }
@@ -126,13 +146,26 @@ fun PhotoDetailSheet(photoId: String, onClose: () -> Unit) {
                 ) {
                     CircularProgressIndicator(color = WColors.Primary)
                 }
+                record == null && remoteCode.isNotBlank() -> RemoteContent(
+                    code = remoteCode,
+                    remote = remote,
+                    error = remoteError,
+                    onDelete = onDelete,
+                    onClose = onClose,
+                )
 
                 record == null -> NotFoundContent(onClose = onClose)
 
                 else -> {
                     val rec = record
                     if (rec != null) {
-                        DetailContent(record = rec, photo = photo, missing = missing, onClose = onClose)
+                        DetailContent(
+                            record = rec,
+                            photo = photo,
+                            missing = missing,
+                            onDelete = onDelete,
+                            onClose = onClose,
+                        )
                     }
                 }
             }
@@ -141,12 +174,13 @@ fun PhotoDetailSheet(photoId: String, onClose: () -> Unit) {
     }
 }
 
-/** 详情正文：标题 / 时间 / 坐标 / 精度 / 可疑类型 / 大图 / 水印行 / 关闭 */
+/** 详情正文：标题 / 时间 / 坐标 / 精度 / 可疑类型 / 大图 / 水印行 / 从地图移除 / 关闭 */
 @Composable
 private fun DetailContent(
     record: PhotoRecord,
     photo: Bitmap?,
     missing: Boolean,
+    onDelete: (() -> Unit)?,
     onClose: () -> Unit,
 ) {
     Text(
@@ -244,12 +278,66 @@ private fun DetailContent(
     // 在线验真：验证码/二维码 + 三项校验结果
     VerifySection(record = record)
 
+    if (onDelete != null) {
+        Spacer(Modifier.height(16.dp))
+        DeleteMarkerButton(
+            hint = "照片文件会保留在本机，仅从地图上移除这个标点",
+            onConfirm = onDelete,
+        )
+    }
+
     Spacer(Modifier.height(18.dp))
     GlowButton(
         text = "关闭",
         modifier = Modifier.fillMaxWidth(),
         onClick = onClose,
     )
+}
+
+/**
+ * 「从地图移除该标点」——红色危险按钮 + 二次确认。
+ *
+ * 为什么是「移除标点」而不是「删除照片」：照片是现场证据，App 不提供销毁入口；
+ * 用户要的是地图/房间里别再显示这个点（旧版本删了还会从 PhotoStore 回填，反馈「删不掉」）。
+ */
+@Composable
+private fun DeleteMarkerButton(hint: String, onConfirm: () -> Unit) {
+    var confirming by remember { mutableStateOf(false) }
+    Button(
+        onClick = { confirming = true },
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = WColors.Danger.copy(alpha = 0.16f),
+            contentColor = WColors.Danger,
+        ),
+    ) {
+        Icon(Icons.Rounded.DeleteOutline, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(8.dp))
+        Text("从地图移除该标点", fontWeight = FontWeight.SemiBold)
+    }
+    Spacer(Modifier.height(6.dp))
+    Text(hint, fontSize = 11.sp, color = WColors.OnBgDim)
+
+    if (confirming) {
+        AlertDialog(
+            onDismissRequest = { confirming = false },
+            containerColor = WColors.Bg1,
+            titleContentColor = WColors.OnBg,
+            textContentColor = WColors.OnBgDim,
+            title = { Text("移除这个标点？") },
+            text = { Text("$hint。这个操作可以随时重新拍照或重新标点补回来。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirming = false
+                    onConfirm()
+                }) { Text("移除", color = WColors.Danger, fontWeight = FontWeight.SemiBold) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirming = false }) { Text("取消", color = WColors.OnBgDim) }
+            },
+        )
+    }
 }
 
 /**
@@ -523,6 +611,93 @@ private fun NotFoundContent(onClose: () -> Unit) {
     }
 }
 
+/** 远程取证记录：本机没有照片原件，只展示服务器上的登记信息与签名校验结果 */
+@Composable
+private fun RemoteContent(
+    code: String,
+    remote: RemotePhoto?,
+    error: String,
+    onDelete: (() -> Unit)?,
+    onClose: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                imageVector = Icons.Rounded.PhotoLibrary,
+                contentDescription = null,
+                tint = WColors.Primary,
+                modifier = Modifier.size(26.dp),
+            )
+            Spacer(Modifier.width(10.dp))
+            Column {
+                Text(
+                    text = "远程取证记录",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = WColors.OnBg,
+                )
+                Text(
+                    text = "照片原件在拍摄设备上，本机只核验登记信息",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = WColors.OnBgDim,
+                )
+            }
+        }
+        Spacer(Modifier.height(14.dp))
+        KeyValueRow(key = "验证码", value = code)
+        if (remote != null) {
+            KeyValueRow(key = "登记时间", value = fmtTime(remote.serverTs))
+            KeyValueRow(key = "拍摄时间", value = fmtTime(remote.ts))
+            KeyValueRow(
+                key = "坐标",
+                value = String.format(Locale.US, "%.6f, %.6f", remote.lat, remote.lon),
+            )
+            if (remote.device.isNotBlank()) {
+                KeyValueRow(key = "设备类型", value = deviceTypeLabel(remote.device))
+            }
+            if (remote.note.isNotBlank()) KeyValueRow(key = "备注", value = remote.note)
+            KeyValueRow(key = "照片哈希", value = remote.hashShort)
+            Spacer(Modifier.height(10.dp))
+            StatusBadge(
+                text = if (remote.sigValid) "服务器签名有效" else "服务器签名无效",
+                color = if (remote.sigValid) WColors.Success else WColors.Danger,
+            )
+        } else {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                text = error.ifBlank { "正在查询登记信息…" },
+                style = MaterialTheme.typography.bodyMedium,
+                color = WColors.OnBgDim,
+            )
+        }
+        Spacer(Modifier.height(12.dp))
+        Text(
+            text = "队友在拍摄设备上可以打开原图；本机也可把这个验证码输入网页验真页查看记录。",
+            style = MaterialTheme.typography.bodySmall,
+            color = WColors.OnBgDim,
+        )
+        Spacer(Modifier.height(16.dp))
+        if (onDelete != null) {
+            DeleteMarkerButton(
+                hint = "队友手机上的照片会保留，仅从地图与房间里移除这个标点",
+                onConfirm = onDelete,
+            )
+            Spacer(Modifier.height(12.dp))
+        }
+        GlowButton(
+            text = "关闭",
+            modifier = Modifier.fillMaxWidth(),
+            onClick = onClose,
+        )
+    }
+}
+
+/** 时间戳 → 本地时间文本（0 表示未登记） */
+private fun fmtTime(ms: Long): String =
+    if (ms <= 0L) "—" else SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA).format(Date(ms))
 /** 设备类型编码 → 中文标签（与相机 chip 的口径一致） */
 private fun deviceTypeLabel(raw: String): String = when (raw) {
     "HIDDEN_CAM" -> "隐蔽摄像头"

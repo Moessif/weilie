@@ -7,6 +7,7 @@ import com.gakj.weilie.core.ai.AiClient
 import com.gakj.weilie.core.model.CoverageTask
 import com.gakj.weilie.core.model.TargetCell
 import com.gakj.weilie.core.model.TargetFormat
+import com.gakj.weilie.core.parsing.TaskInputParser
 import com.gakj.weilie.core.photo.PhotoStore
 import com.gakj.weilie.core.sampling.SamplingController
 import com.gakj.weilie.core.store.SessionStore
@@ -59,8 +60,17 @@ object AppGraph {
         }
         val real = task ?: fallbackTask(taskId)
         val c = SamplingController(context.applicationContext, appScope, real)
+        applyGatePrefs(c)
         currentController = c
         return c
+    }
+
+    /** 需求 2：把设置页保存的 GPS 安检门槛应用到控制器（默认 50m / 3m） */
+    private fun applyGatePrefs(c: SamplingController) {
+        runCatching {
+            c.maxAccuracyM = prefs.getFloat(Route.PREF_GATE_ACCURACY, 50f).toDouble()
+            c.minDistanceM = prefs.getFloat(Route.PREF_GATE_MIN_DIST, 1f).toDouble()
+        }
     }
 
     /**
@@ -70,6 +80,7 @@ object AppGraph {
     fun retarget(context: Context, task: CoverageTask): SamplingController {
         currentController?.stop()
         val c = SamplingController(context.applicationContext, appScope, task)
+        applyGatePrefs(c)
         currentController = c
         pendingTask = task
         return c
@@ -82,10 +93,13 @@ object AppGraph {
     private fun fallbackTask(taskId: String): CoverageTask {
         val m = runCatching { store.loadManifest(taskId) }.getOrNull()
         val fmt = runCatching { TargetFormat.valueOf(m?.targetFormat ?: "") }.getOrNull()
+        // 关键：必须用 rawInput 重新解析出完整目标（ECI/NCI/经纬度…）。
+        // 只塞 rawInput 会让 parsed 字段全为 null → 地图页显示「未设目标」、命中判定永远 false。
+        val parsed = runCatching { TaskInputParser.parse(m?.targetRawInput ?: "").target }.getOrNull()
         return CoverageTask(
             id = taskId,
             title = m?.title?.ifBlank { null } ?: "恢复的走测任务",
-            target = TargetCell(
+            target = parsed ?: TargetCell(
                 format = fmt ?: TargetFormat.ECI,
                 rawInput = m?.targetRawInput ?: "",
             ),

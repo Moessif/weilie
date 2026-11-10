@@ -3,6 +3,7 @@ package com.gakj.weilie.core.verify
 import com.gakj.weilie.core.photo.PhotoRecord
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
+import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
@@ -55,6 +56,21 @@ object PhotoHasher {
  * 单张照片的验证结果。
  * [error] 非空表示这次验证没做成（网络/服务器异常），不代表照片有问题。
  */
+/** 远程照片登记信息（本机没有照片原件时，按验证码从服务器查到的元数据） */
+data class RemotePhoto(
+    val code: String,
+    val sha256: String,
+    val ts: Long,
+    val lat: Double,
+    val lon: Double,
+    val device: String = "",
+    val kind: String = "",
+    val note: String = "",
+    val serverTs: Long = 0L,
+    val sigValid: Boolean = false,
+) {
+    val hashShort: String get() = if (sha256.length >= 16) sha256.take(16) + "…" else sha256
+}
 data class VerifyResult(
     val found: Boolean,
     val hashMatch: Boolean,
@@ -146,7 +162,15 @@ private data class VerifyBody(val code: String, val sha256: String)
 @Serializable
 private data class VerifyRecordDto(
     val code: String = "",
+    val sha256: String = "",
+    val ts: Long = 0L,
+    val lat: Double = 0.0,
+    val lon: Double = 0.0,
+    val device: String = "",
+    val kind: String = "",
+    val note: String = "",
     val serverTs: Long = 0L,
+    val sig: String = "",
 )
 
 /** 注意：服务端未命中时会把 hashMatch/sigValid 显式输出成 null，这里必须可空接 */
@@ -272,6 +296,37 @@ class PhotoVerifier(baseUrl: String, private val store: VerifyStore? = null) {
             sigValid = dto.sigValid ?: false,
             serverTs = dto.record?.serverTs,
             code = dto.record?.code?.ifBlank { cleanCode } ?: cleanCode,
+        )
+    }
+
+    /**
+     * 按验证码查登记信息（不需要照片原件）。
+     *
+     * 跨设备场景：队友只收到 photoId + code，本机没有照片文件，用这个接口把溯源信息（时间/坐标/哈希/签名）
+     * 显示出来；任何异常都返回 null，不打断 UI。
+     */
+    suspend fun lookup(code: String): RemotePhoto? {
+        val cleanCode = code.trim().uppercase()
+        if (cleanCode.isBlank()) return null
+        val text = runCatching {
+            withTimeout(TIMEOUT_MS) {
+                client.get("$base/api/photo/verify?code=$cleanCode").bodyAsText()
+            }
+        }.getOrNull() ?: return null
+        val dto = runCatching { json.decodeFromString(VerifyResp.serializer(), text) }.getOrNull() ?: return null
+        if (!dto.ok || !dto.found) return null
+        val rec = dto.record ?: return null
+        return RemotePhoto(
+            code = rec.code,
+            sha256 = rec.sha256,
+            ts = rec.ts,
+            lat = rec.lat,
+            lon = rec.lon,
+            device = rec.device,
+            kind = rec.kind,
+            note = rec.note,
+            serverTs = rec.serverTs,
+            sigValid = dto.sigValid ?: false,
         )
     }
 

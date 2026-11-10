@@ -68,6 +68,8 @@ sealed class WsMsg {
         val note: String = "",
         val kind: String = "NORMAL", // NORMAL / SUSPICIOUS
         val ts: Long,
+        /** 在线验真码：队友没有本机照片原件，靠它向服务器查登记信息 */
+        val code: String = "",
     ) : WsMsg()
 
     /** 队长下发/重划任务范围（圆=以合适半径扫清；多边形=分块）。
@@ -111,7 +113,20 @@ sealed class WsMsg {
         val photoId: String = "",
         /** 可疑设备类型（kind=SUSPICIOUS 时） */
         val deviceType: String = "",
+        /** 标点 id：删除时定位用；旧版本可能为空 */
+        val id: String = "",
+        /** 标点名称（民警自己起名，如「3 号楼配电房」）；空则按类型显示 */
+        val name: String = "",
+        /** 可见范围：空 = 全队可见；否则只有列表里的 userId（加上创建者自己）能看到 */
+        val visibleTo: List<String> = emptyList(),
+        /** 照片在线验真码：跨设备查看时用它向服务器查登记信息 */
+        val photoCode: String = "",
     ) : WsMsg()
+
+    /** 删除标点：只有创建者本人或队长有权删除 */
+    @Serializable
+    @SerialName("markerDelete")
+    data class MarkerDelete(val id: String, val by: String) : WsMsg()
 
     @Serializable
     @SerialName("ping")

@@ -180,7 +180,7 @@ private fun PageIntro() {
         Spacer(Modifier.height(12.dp))
         FeatureRow(Icons.Rounded.NetworkCheck, "1Hz 采样与信号评级", "RSRP/RSRQ/SINR 逐秒记录，六档评级直观呈现")
         Spacer(Modifier.height(12.dp))
-        FeatureRow(Icons.Rounded.Layers, "覆盖拟合与等值线", "凸包边界 + 插值等值线，覆盖范围一眼看清")
+        FeatureRow(Icons.Rounded.Layers, "覆盖拟合与等值线", "凹包边界 + 插值等值线，覆盖范围一眼看清")
         Spacer(Modifier.height(12.dp))
         FeatureRow(Icons.Rounded.Groups, "多人协同与 AI 助手", "队友位置实时共享，内置通信技术问答助手")
         Spacer(Modifier.height(32.dp))

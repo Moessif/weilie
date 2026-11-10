@@ -3,6 +3,7 @@ package com.gakj.weilie.ui.map
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import com.gakj.weilie.core.cellmap.CellSite as KnownCell
 import com.gakj.weilie.core.model.SampleRecord
 import com.gakj.weilie.core.model.TargetCell
 import com.gakj.weilie.core.sync.MemberView
@@ -28,11 +29,23 @@ fun MapCanvas(
     markers: List<WsMsg.Marker> = emptyList(),
     zone: WsMsg.Zone? = null,
     zones: List<WsMsg.Zone> = emptyList(),
+    /** 自由绘制中的手指轨迹（WGS84）：实时折线预览 */
+    draftPath: List<Pair<Double, Double>> = emptyList(),
     camera: MapCamera = remember { MapCamera() },
     onTapLatLon: ((Double, Double) -> Unit)? = null,
     selfLatLon: Pair<Double, Double>? = null,
     trackArrows: Boolean = false,
     cellSites: List<CellSite> = emptyList(),
+    sampleMarks: Boolean = true,
+    area: ClosedArea? = null,
+    theories: List<TheoryShape> = emptyList(),
+    heat: HeatLayer? = null,
+    cellLibrary: List<KnownCell> = emptyList(),
+    selectedCellKey: String? = null,
+    onCellSiteClick: ((KnownCell) -> Unit)? = null,
+    /** 自由绘制：单指画范围（传地图引擎，双指拖动由引擎处理） */
+    drawMode: Boolean = false,
+    onDrawPoint: ((Double, Double) -> Unit)? = null,
     onMarkerClick: ((WsMsg.Marker) -> Unit)? = null,
 ) {
     if (BaiduBootstrap.ready) {
@@ -47,11 +60,21 @@ fun MapCanvas(
             markers = markers,
             zone = zone,
             zones = zones,
+            draftPath = draftPath,
             camera = camera,
             onTapLatLon = onTapLatLon,
             selfLatLon = selfLatLon,
             trackArrows = trackArrows,
             cellSites = cellSites,
+            sampleMarks = sampleMarks,
+            area = area,
+            theories = theories,
+            heat = heat,
+            cellLibrary = cellLibrary,
+            selectedCellKey = selectedCellKey,
+            onCellSiteClick = onCellSiteClick,
+            drawMode = drawMode,
+            onDrawPoint = onDrawPoint,
             onMarkerClick = onMarkerClick,
         )
     } else {
@@ -66,11 +89,21 @@ fun MapCanvas(
             markers = markers,
             zone = zone,
             zones = zones,
+            draftPath = draftPath,
             camera = camera,
             onTapLatLon = onTapLatLon,
             selfLatLon = selfLatLon,
             trackArrows = trackArrows,
             cellSites = cellSites,
+            sampleMarks = sampleMarks,
+            area = area,
+            theories = theories,
+            heat = heat,
+            cellLibrary = cellLibrary,
+            selectedCellKey = selectedCellKey,
+            onCellSiteClick = onCellSiteClick,
+            drawMode = drawMode,
+            onDrawPoint = onDrawPoint,
             onMarkerClick = onMarkerClick,
         )
     }

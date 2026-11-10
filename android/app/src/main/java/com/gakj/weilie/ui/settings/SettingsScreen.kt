@@ -29,14 +29,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -60,12 +64,14 @@ import com.gakj.weilie.ui.common.toast
 import com.gakj.weilie.ui.theme.DEFAULT_ACCENT
 import com.gakj.weilie.ui.theme.GlassCard
 import com.gakj.weilie.ui.theme.GlowButton
+import com.gakj.weilie.ui.theme.MonoText
 import com.gakj.weilie.ui.theme.SectionHeader
 import com.gakj.weilie.ui.theme.ThemeController
-import com.gakj.weilie.ui.theme.ThemeMode
 import com.gakj.weilie.ui.theme.ThemeSpec
 import com.gakj.weilie.ui.theme.WColors
 import com.gakj.weilie.ui.theme.colorHsl
+import kotlin.math.roundToInt
+import kotlin.math.roundToLong
 
 /** 预设主题色（名称仅用于无障碍/提示，色值与设置页色块一一对应） */
 private data class AccentPreset(val name: String, val argb: Int)
@@ -103,6 +109,21 @@ fun SettingsScreen(onBack: () -> Unit) {
     var server by remember { mutableStateOf(AppGraph.prefs.getString(Route.PREF_SERVER, "") ?: "") }
     var baiduAk by remember { mutableStateOf(AppGraph.prefs.getString(Route.PREF_BAIDU_AK, "") ?: "") }
 
+    // 需求 2：GPS 双重安检门槛（默认 50m / 3m，可调）
+    var accGate by remember {
+        mutableFloatStateOf(AppGraph.prefs.getFloat(Route.PREF_GATE_ACCURACY, 50f))
+    }
+    var distGate by remember {
+        mutableFloatStateOf(AppGraph.prefs.getFloat(Route.PREF_GATE_MIN_DIST, 1f))
+    }
+
+    // 打点间隔：预设 1/2/5 秒之外还能手动输入（0.2 ~ 600 秒）
+    var intervalMs by remember {
+        mutableLongStateOf(AppGraph.prefs.getLong(Route.PREF_SAMPLE_INTERVAL, 1_000L))
+    }
+    var intervalEdit by remember { mutableStateOf(false) }
+    var intervalText by remember { mutableStateOf("") }
+
     // 权限状态刷新计数：申请结果回来后 +1，重新读取系统权限
     var permTick by remember { mutableIntStateOf(0) }
     // 定位 / 电话 / 相机共用一个权限申请器，回调里刷新状态
@@ -126,6 +147,68 @@ fun SettingsScreen(onBack: () -> Unit) {
         // ---------- 外观 ----------
         SectionHeader("外观", modifier = Modifier.padding(horizontal = 20.dp))
         AppearanceSection()
+        Spacer(Modifier.height(16.dp))
+
+        // ---------- 采集与安检 ----------
+        SectionHeader("采集与安检", modifier = Modifier.padding(horizontal = 20.dp))
+        GlassCard(Modifier.padding(horizontal = 20.dp)) {
+            Column {
+                GateSliderRow(
+                    title = "定位精度门槛",
+                    valueText = "${accGate.roundToInt()} m",
+                    hint = "GPS 误差超过该值直接丢弃并提示（默认 50 m）",
+                    value = accGate,
+                    range = 10f..100f,
+                ) { v ->
+                    accGate = v
+                    AppGraph.prefs.edit().putFloat(Route.PREF_GATE_ACCURACY, v).apply()
+                    AppGraph.currentController?.maxAccuracyM = v.toDouble()
+                }
+                Spacer(Modifier.height(6.dp))
+                GateSliderRow(
+                    title = "防抖距离门槛",
+                    valueText = "${distGate.roundToInt()} m",
+                    hint = "距上个成功点小于该值时合并为一点（默认 3 m）",
+                    value = distGate,
+                    range = 1f..10f,
+                ) { v ->
+                    distGate = v
+                    AppGraph.prefs.edit().putFloat(Route.PREF_GATE_MIN_DIST, v).apply()
+                    AppGraph.currentController?.minDistanceM = v.toDouble()
+                }
+                Spacer(Modifier.height(6.dp))
+                // 打点间隔：预设之外还能手动输入（需求：打点频率支持手动填写）
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable {
+                            intervalText = fmtInterval(intervalMs)
+                            intervalEdit = true
+                        }
+                        .padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "打点间隔",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = WColors.OnBg,
+                        )
+                        Text(
+                            "默认 1 秒，可手动输入 0.2~600 秒（间隔越短越费电）",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = WColors.OnBgDim,
+                        )
+                    }
+                    Text(
+                        fmtInterval(intervalMs),
+                        style = MonoText.style,
+                        color = WColors.Primary,
+                    )
+                }
+            }
+        }
         Spacer(Modifier.height(16.dp))
 
         // ---------- AI 助手 ----------
@@ -260,7 +343,58 @@ fun SettingsScreen(onBack: () -> Unit) {
         }
         Spacer(Modifier.navigationBarsPadding().height(24.dp))
     }
+
+    // 打点间隔手动输入（0.2 ~ 600 秒）
+    if (intervalEdit) {
+        AlertDialog(
+            onDismissRequest = { intervalEdit = false },
+            containerColor = WColors.Bg1,
+            title = { Text("打点间隔", color = WColors.OnBg) },
+            text = {
+                Column {
+                    GlassTextField(
+                        value = intervalText,
+                        onValueChange = { raw ->
+                            intervalText = raw.filter { it.isDigit() || it == '.' }.take(7)
+                        },
+                        label = "秒",
+                        placeholder = "1.0",
+                        mono = true,
+                        singleLine = true,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "允许 0.2 ~ 600 秒：越短越贴合路线但更耗电；在设置里改后立即生效。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = WColors.OnBgDim,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val sec = intervalText.toDoubleOrNull()
+                    if (sec == null || sec < 0.2 || sec > 600.0) {
+                        toast(ctx, "请输入 0.2 ~ 600 之间的秒数")
+                    } else {
+                        val ms = (sec * 1000).roundToLong()
+                        intervalMs = ms
+                        AppGraph.prefs.edit().putLong(Route.PREF_SAMPLE_INTERVAL, ms).apply()
+                        AppGraph.currentController?.sampleIntervalMs = ms
+                        intervalEdit = false
+                        toast(ctx, "打点间隔已设为 ${fmtInterval(ms)}")
+                    }
+                }) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = { intervalEdit = false }) { Text("取消") }
+            },
+        )
+    }
 }
+
+/** 打点间隔的展示文案：整秒显示「N 秒」，否则保留一位小数。 */
+private fun fmtInterval(ms: Long): String =
+    if (ms % 1000L == 0L) "${ms / 1000L} 秒" else String.format(java.util.Locale.US, "%.1f 秒", ms / 1000.0)
 
 /**
  * 外观区块：主题模式 + 10 个预设色 + 自定义色相/饱和度 + 实时预览。
@@ -285,20 +419,20 @@ private fun AppearanceSection() {
 
     GlassCard(Modifier.padding(horizontal = 20.dp)) {
         Column {
-            // 第一行：主题模式
+            // 第一行：主题模式（只保留深色：户外/夜间执法场景更省电、对比度更稳）
             Text("主题模式", style = MaterialTheme.typography.labelSmall, color = WColors.OnBgDim)
             Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ModePill("跟随系统", spec.mode == ThemeMode.SYSTEM, Modifier.weight(1f)) {
-                    apply(spec.copy(mode = ThemeMode.SYSTEM))
-                }
-                ModePill("浅色", spec.mode == ThemeMode.LIGHT, Modifier.weight(1f)) {
-                    apply(spec.copy(mode = ThemeMode.LIGHT))
-                }
-                ModePill("深色", spec.mode == ThemeMode.DARK, Modifier.weight(1f)) {
-                    apply(spec.copy(mode = ThemeMode.DARK))
-                }
-            }
+            Text(
+                "深色模式（固定）",
+                style = MaterialTheme.typography.bodyMedium,
+                color = WColors.OnBg,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "围猎只提供深色界面：夜间/车内使用不刺眼，地图覆盖物对比度也更高。",
+                style = MaterialTheme.typography.labelSmall,
+                color = WColors.OnBgDim,
+            )
 
             Spacer(Modifier.height(18.dp))
 
@@ -394,25 +528,6 @@ private fun AppearanceSection() {
     }
 }
 
-/** 主题模式胶囊：选中态 = 主色描边 + 20% 填充 */
-@Composable
-private fun ModePill(text: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    val bg = if (selected) WColors.Primary.copy(alpha = 0.20f) else WColors.ChipBg
-    val borderColor = if (selected) WColors.Primary else WColors.ChipBorder
-    val fg = if (selected) WColors.Primary else WColors.OnBgDim
-    Box(
-        modifier
-            .clip(RoundedCornerShape(999.dp))
-            .background(bg)
-            .border(1.dp, borderColor, RoundedCornerShape(999.dp))
-            .clickable { onClick() }
-            .padding(vertical = 8.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(text, style = MaterialTheme.typography.labelLarge, color = fg)
-    }
-}
-
 /** 预设色块：36dp 圆，选中带对勾（对勾颜色按色块亮度自动反色，深色块上也能看清） */
 @Composable
 private fun AccentSwatch(color: Color, selected: Boolean, onClick: () -> Unit) {
@@ -452,5 +567,36 @@ private fun PermRow(text: String, ok: Boolean, onClick: (() -> Unit)? = null) {
     ) {
         Text(text, style = MaterialTheme.typography.bodyLarge, color = WColors.OnBg, modifier = Modifier.weight(1f))
         StatusBadge(if (ok) "已授权" else "未授权", if (ok) WColors.Success else WColors.Danger)
+    }
+}
+
+
+/** 采集门槛滑杆（需求 2：精度/防抖门槛可调） */
+@Composable
+private fun GateSliderRow(
+    title: String,
+    valueText: String,
+    hint: String,
+    value: Float,
+    range: ClosedFloatingPointRange<Float>,
+    onChange: (Float) -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(title, style = MaterialTheme.typography.bodyMedium, color = WColors.OnBg)
+            Text(valueText, style = MaterialTheme.typography.labelMedium, color = WColors.Primary)
+        }
+        Text(hint, style = MaterialTheme.typography.labelSmall, color = WColors.OnBgDim)
+        Slider(
+            value = value,
+            onValueChange = onChange,
+            valueRange = range,
+            colors = SliderDefaults.colors(
+                thumbColor = WColors.Primary,
+                activeTrackColor = WColors.Primary,
+                inactiveTrackColor = WColors.GlassBorder,
+            ),
+            modifier = Modifier.fillMaxWidth().height(28.dp),
+        )
     }
 }

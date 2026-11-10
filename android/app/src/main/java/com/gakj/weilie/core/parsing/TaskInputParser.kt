@@ -101,6 +101,70 @@ object TaskInputParser {
         )
     }
 
+    /**
+     * 规格校验：不合规的目标参数不允许创建任务（用户要求「不符合规格的不可创建任务」）。
+     * 与 [parse] 的区别是这里严格按各制式的编号位宽/坐标范围卡口，而 parse 只尽量识别。
+     */
+    data class Validation(
+        val ok: Boolean,
+        val blocking: List<String> = emptyList(),
+        val warnings: List<String> = emptyList(),
+    )
+
+    fun validate(raw: String): Validation {
+        val parsed = parse(raw)
+        val target = parsed.target
+        if (target == null) {
+            return Validation(ok = false, blocking = listOf(parsed.error ?: "无法识别该参数"))
+        }
+        val blocking = mutableListOf<String>()
+        val warnings = target.warnings.toMutableList()
+        when (target.format) {
+            TargetFormat.NCI -> {
+                val nci = target.nci ?: 0L
+                if (nci <= 0L) blocking += "NCI 必须大于 0"
+                if (nci > 0xFFFFFFFFFL) blocking += "NCI 不能超过 36 位（最大 68719476735），请核对上级原文"
+            }
+            TargetFormat.ECI -> {
+                val eci = target.eci ?: 0L
+                if (eci <= 0L) blocking += "ECI 必须大于 0"
+                if (eci > 0xFFFFFFFL) blocking += "ECI 不能超过 28 位（最大 268435455），请核对上级原文"
+            }
+            TargetFormat.LAC_CI -> {
+                val lac = target.lac ?: 0L
+                val ci = target.cid ?: 0L
+                if (lac !in 1L..65535L) blocking += "LAC/TAC 应在 1 ~ 65535 之间"
+                if (ci <= 0L) blocking += "CI 必须大于 0"
+                if (ci > 0xFFFFFFFFL) blocking += "CI 过大，4G/5G 请改用 ECI / NCI"
+            }
+            TargetFormat.LATLON_RADIUS -> {
+                val lat = target.centerLat
+                val lon = target.centerLon
+                if (lat == null || lon == null) {
+                    blocking += "经纬度不完整"
+                } else {
+                    if (lat !in -90.0..90.0) blocking += "纬度应在 -90 ~ 90 之间"
+                    if (lon !in -180.0..180.0) blocking += "经度应在 -180 ~ 180 之间"
+                    if (lat == 0.0 && lon == 0.0) blocking += "坐标 (0, 0) 不是有效位置"
+                }
+                target.givenRadiusM?.let { r ->
+                    if (r <= 0.0) blocking += "半径必须大于 0"
+                    if (r > 50_000.0) blocking += "半径超过 50 公里，请确认单位是「米」"
+                }
+            }
+        }
+        // 用户明确写了「ECI / LTE」却超出 28 位：parse 会把超限值降级成 NCI，
+        // 但校验要拦住——否则民警以为填的是 4G 小区，实际系统按 5G NCI 处理。
+        val labeledEci = Regex("""(?:ECI|LTE)\s*[:：=]?\s*(0X[0-9A-F]+|\d{1,15})""").find(normalize(raw))
+        if (labeledEci != null && target.format == TargetFormat.NCI) {
+            blocking += "按 ECI 校验超出 28 位上限（最大 268435455），请核对上级原文"
+        }
+        if (target.format != TargetFormat.LATLON_RADIUS && target.unifiedCi() == null) {
+            blocking += "缺少可用的统一小区编号"
+        }
+        return Validation(ok = blocking.isEmpty(), blocking = blocking, warnings = warnings)
+    }
+
     private fun numberToResult(raw: String, numStr: String, rat: Rat, isNci: Boolean): ParseResult {
         val v = if (numStr.startsWith("0X")) numStr.substring(2).toLongOrNull(16) else numStr.toLongOrNull()
         if (v == null || v < 0) return ParseResult(null, "编号不是有效数字", raw.trim())

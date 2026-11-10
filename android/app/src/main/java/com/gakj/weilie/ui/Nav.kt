@@ -67,6 +67,28 @@ object Route {
     const val PREF_CELL_ALERT = "cell_alert_notice"
     const val PREF_PINNED_TOOLS = "pinned_tools"
     const val PREF_PLACED_TOOLS = "placed_tools"
+    const val PREF_SAMPLE_INTERVAL = "sample_interval_ms"
+
+    /** 实测封闭区域图层开关（默认开） */
+    const val PREF_AREA_ON = "map_area_on"
+    // 实测封闭区域的成面方式：AUTO=高精度凹包，SIMULATED=模拟实测（轨迹点画圆/方连成片）
+    const val PREF_AREA_MODE = "map_area_mode"
+    const val PREF_AREA_BUFFER_RADIUS = "map_area_buffer_radius"
+    const val PREF_AREA_BUFFER_SHAPE = "map_area_buffer_shape"
+
+    /**
+     * 单人模式下被用户「从地图移除」的取证标点 id（\u0001 分隔）。
+     * 照片本身不删除（仍是证据），只让它的标点不再出现在地图上；
+     * 否则下次进入任务从 PhotoStore 回填时又会冒出来（用户反馈「删了还在」）。
+     */
+    const val PREF_HIDDEN_PHOTO_MARKERS = "hidden_photo_markers"
+
+    /** 多人模式：上一次「定位到队员」的选择（userId），空 = 定位自己 */
+    const val PREF_LOCATE_MEMBER = "locate_member_id"
+
+    /** 需求 2：GPS 双重安检门槛（精度 m / 防抖距离 m） */
+    const val PREF_GATE_ACCURACY = "gate_accuracy_m"
+    const val PREF_GATE_MIN_DIST = "gate_min_dist_m"
 
     // 外观（主题）
     const val PREF_THEME_MODE = "theme_mode"

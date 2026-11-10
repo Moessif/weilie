@@ -30,6 +30,7 @@ import android.telephony.SubscriptionManager
 import android.telephony.TelephonyCallback
 import android.telephony.TelephonyManager
 import androidx.core.content.ContextCompat
+import com.gakj.weilie.BuildConfig
 import com.gakj.weilie.core.model.CellIdentity
 import com.gakj.weilie.core.model.Rat
 import com.gakj.weilie.core.model.SignalData
@@ -75,6 +76,18 @@ data class CellSnapshot(
     val dataRatLabel: String = "",
     /** 与 [neighbors] 顺序一致的邻区测量值（[CellIdentity] 不携带信号，专家面板展示邻区强度用）。 */
     val neighborCells: List<NeighborCell> = emptyList(),
+    /** 数据卡当前组网形态（SA / NSA / LTE / LEGACY），决定是否显示 LTE 锚点 */
+    val netMode: NetMode = NetMode.UNKNOWN,
+    /** 5G NR 小区：SA 的服务小区，NSA 的辅载波；用于目标 NCI 匹配 */
+    val nrServing: CellIdentity? = null,
+    /** [nrServing] 的测量值（SA 时与 [signal] 同源；NSA 时是 NR 辅载波的 SS-RSRP） */
+    val nrSignal: SignalData? = null,
+    /** NSA 的 LTE 锚点（仅 [netMode] == NSA 时非空） */
+    val anchorLte: CellIdentity? = null,
+    /** 本快照取自哪张卡（默认数据卡）的 subscriptionId；-1 表示读不到订阅信息 */
+    val dataSubId: Int = -1,
+    /** 邻区为空时的原因说明（机型/ROM 限制），UI 直接展示而不是冷冰冰的 0 */
+    val neighborNote: String = "",
 )
 
 /** 免 root 采集通道抽象（华为 AIDL 通道未来实现同一接口插入） */
@@ -104,6 +117,10 @@ class AndroidCellReader(private val context: Context) : CellSnapshotSource {
 
     private var simsCache: List<SimCell> = emptyList()
     private var simsCachedAt = 0L
+
+    /** 按卡拆分后的原始小区（1s 缓存），服务小区判定与 SIM 行共用同一份，避免重复 IPC */
+    private var subCellsCache: List<SubCells> = emptyList()
+    private var subCellsCachedAt = 0L
 
     private val _snapshot = MutableStateFlow<CellSnapshot?>(null)
     override val snapshot: StateFlow<CellSnapshot?> = _snapshot
@@ -180,38 +197,86 @@ class AndroidCellReader(private val context: Context) : CellSnapshotSource {
     @Synchronized
     private fun consume(cellInfos: List<CellInfo>, ss: SignalStrength?) {
         val now = System.currentTimeMillis()
-        var serving: CellIdentity? = null
-        var signal: SignalData? = null
-        val neighbors = ArrayList<CellIdentity>()
-        val neighborCells = ArrayList<NeighborCell>()
-        val parsed = ArrayList<Pair<CellIdentity, SignalData?>>(cellInfos.size)
-        for (ci in cellInfos) {
+        // 1) 按 SubscriptionId 分卡读小区。真机双卡实测：`tm.allCellInfo` 会把两张卡的小区
+        //    混在一个列表里，直接取「最后一个已注册小区」会让联通 LTE 覆盖掉移动 NR —— 这就是
+        //    「目标 NCI 永远不命中 + 双卡串台」的根因。只认默认数据卡的小区。
+        val subs = readSubCells(now)
+        val primary = subs.firstOrNull { it.isData && it.cells.isNotEmpty() }
+            ?: subs.firstOrNull { it.cells.isNotEmpty() }
+        if (primary == null) {
+            // 一张卡都读不到（无定位权限 / ROM 全屏蔽）：保持空快照，由 UI 引导授权
+            if (_snapshot.value == null) {
+                _snapshot.value = CellSnapshot(tsEpochMs = now, deviceModel = Build.MODEL ?: "")
+            }
+            return
+        }
+        val parsed = ArrayList<Pair<CellIdentity, SignalData?>>(primary.cells.size)
+        for (ci in primary.cells) {
             try {
-                val pair = parseCellInfo(ci, ss)
-                parsed.add(pair)
-                val (id, sig) = pair
-                if (id.isRegistered) {
-                    serving = id
-                    if (sig != null) signal = sig
-                } else {
-                    neighbors.add(id)
-                    neighborCells.add(NeighborCell(id, sig))
-                }
+                parsed.add(parseCellInfo(ci, ss))
             } catch (_: Exception) {
                 // 单个小区解析失败不影响整体
             }
         }
-        val wifi = readWifi()
-        // NSA 判断：NR 邻区在 NSA 下是未注册的 5G 辅载波；LTE 服务小区 + NR 邻区 > 0 即疑似 NSA 5G
-        val nrNeighborCount = neighbors.count { it.rat == Rat.NR }
-        val anchorRat = when {
-            serving?.rat == Rat.NR -> Rat.NR
-            serving?.rat == Rat.LTE && nrNeighborCount > 0 -> Rat.LTE
+
+        val registeredNr = parsed
+            .filter { it.first.isRegistered && it.first.rat == Rat.NR }
+            .maxByOrNull { it.second?.rsrp ?: Int.MIN_VALUE }
+        val registeredLte = parsed
+            .filter { it.first.isRegistered && it.first.rat == Rat.LTE }
+            .maxByOrNull { it.second?.rsrp ?: Int.MIN_VALUE }
+        val registeredAny = parsed.firstOrNull { it.first.isRegistered }
+        val nrCells = parsed.filter { it.first.rat == Rat.NR && (it.first.ci ?: 0L) > 0L }
+        val dataRat = readDataRat(primary.subId)
+
+        // 2) SA / NSA 状态机：
+        //    - NR 注册 + LTE 注册 → NSA（LTE 是锚点）
+        //    - 只有 NR 注册 → SA（没有锚点，UI 必须隐藏「锚点 LTE」）
+        //    - 只有 LTE 注册但扫到 NR 辅载波（或数据网是 NR）→ NSA
+        val netMode = NetJudge.classify(
+            registeredNr = registeredNr != null,
+            registeredLte = registeredLte != null,
+            registeredAny = registeredAny != null,
+            nrNeighborCount = nrCells.count { !it.first.isRegistered },
+            dataRatIsNr = dataRat == Rat.NR,
+        )
+        // 服务小区：SA 取 NR；NSA 取 LTE 锚点；其余取已注册小区
+        val servingPair = when (netMode) {
+            NetMode.SA -> registeredNr ?: registeredAny
+            NetMode.NSA -> registeredLte ?: registeredAny
+            else -> registeredAny ?: registeredNr ?: registeredLte
+        }
+        val serving = servingPair?.first
+        val signal = servingPair?.second
+        val nrPair = when (netMode) {
+            NetMode.SA -> registeredNr
+            NetMode.NSA -> registeredNr ?: nrCells.maxByOrNull { it.second?.rsrp ?: Int.MIN_VALUE }
             else -> null
         }
-        // ROM 可能过滤掉未注册 NR 小区；用数据网络类型兜底判断「实际是 5G NSA」
-        val dataRat = readDataRat()
-        val sims = readSims(cellInfos, parsed, now, dataRat)
+        val nrServing = nrPair?.first
+        val nrSignal = nrPair?.second
+        val anchorLte = if (netMode == NetMode.NSA) serving else null
+
+        val neighbors = ArrayList<CellIdentity>()
+        val neighborCells = ArrayList<NeighborCell>()
+        for (p in parsed) {
+            if (p.first.isRegistered) continue
+            neighbors.add(p.first)
+            neighborCells.add(NeighborCell(p.first, p.second))
+        }
+        val wifi = readWifi()
+        val nrNeighborCount = neighbors.count { it.rat == Rat.NR }
+        val anchorRat = when (netMode) {
+            NetMode.SA -> Rat.NR
+            NetMode.NSA -> Rat.LTE
+            else -> serving?.rat
+        }
+        val sims = readSims(subs, primary, parsed, dataRat, now)
+        val neighborNote = when {
+            neighbors.isNotEmpty() -> ""
+            netMode == NetMode.SA -> "5G SA 模式下多数机型不提供邻区（系统限制）"
+            else -> "当前系统/芯片限制，未返回邻区（不影响主区命中判定）"
+        }
         _snapshot.value = CellSnapshot(
             tsEpochMs = now,
             serving = serving,
@@ -224,34 +289,108 @@ class AndroidCellReader(private val context: Context) : CellSnapshotSource {
             dataRat = dataRat,
             dataRatLabel = dataRatLabelOf(dataRat),
             neighborCells = neighborCells,
+            netMode = netMode,
+            nrServing = nrServing,
+            nrSignal = nrSignal,
+            anchorLte = anchorLte,
+            dataSubId = primary.subId,
+            neighborNote = neighborNote,
         )
+        if (BuildConfig.DEBUG) {
+            // 真机排查用：一眼看出「哪张卡 / 什么制式 / 服务小区编号」，便于对上级给的编号
+            android.util.Log.d(
+                "CellReader",
+                "sub=${primary.subId} slot=${primary.slot} ${primary.carrier} mode=$netMode " +
+                    "serving=${serving?.display()} nr=${nrServing?.display()} " +
+                    "rsrp=${signal?.rsrp} nrRsrp=${nrSignal?.rsrp} neighbors=${neighbors.size} " +
+                    "dataRat=${dataRatLabelOf(dataRat)}",
+            )
+        }
     }
 
     /**
      * 按「一行一张 SIM 卡」读取各卡驻留小区。
      *
-     * 取值路径：`SubscriptionManager.getActiveSubscriptionInfoList()`（需 READ_PHONE_STATE）
-     * → 每张卡 `createForSubscriptionId(subId).allCellInfo`（需定位权限）
-     * → 抽成 [NrDesc]/[LteDesc] → [planSimCells] 纯函数挑选（NR 优先、NSA 补一行）。
-     * 任一步没权限/ROM 不返回，都回退到默认订阅的 registered 小区（slot=0），保证 UI 不空。
-     * 结果缓存 1s：CellInfo 回调可能一秒多次，避免每秒都对每张卡重复 IPC。
+     * 与读服务小区共用 [readSubCells] 的 1s 缓存，避免每秒对每张卡重复 IPC。
+     * 取值路径：`SubscriptionManager.getActiveSubscriptionInfoList`（需 READ_PHONE_STATE）
+     * → 每卡 `createForSubscriptionId(subId).allCellInfo` → [NrDesc]/[LteDesc] → [planSimCells]。
      */
     private fun readSims(
-        cellInfos: List<CellInfo>,
-        parsed: List<Pair<CellIdentity, SignalData?>>,
-        now: Long,
+        subs: List<SubCells>,
+        primary: SubCells,
+        primaryParsed: List<Pair<CellIdentity, SignalData?>>,
         dataRat: Rat?,
+        now: Long,
     ): List<SimCell> {
         if (now - simsCachedAt < SIMS_REFRESH_MS && simsCache.isNotEmpty()) return simsCache
-        // dataNetworkType 只描述默认数据卡；拿不到默认数据卡 id 时退化为对所有卡生效
-        val defaultDataSubId = try {
+        val inputs = ArrayList<SimInput>(2)
+        for (sub in subs) {
+            if (sub.cells.isEmpty()) continue
+            inputs += SimInput(
+                slot = sub.slot,
+                carrier = sub.carrier,
+                mccMnc = sub.mccMnc,
+                nrCells = if (Build.VERSION.SDK_INT >= 30) {
+                    sub.cells.filterIsInstance<CellInfoNr>().mapNotNull { nrDescOf(it) }
+                } else {
+                    emptyList()
+                },
+                lteCells = sub.cells.filterIsInstance<CellInfoLte>().mapNotNull { lteDescOf(it) },
+                // 每张卡用各自的 dataNetworkType：只对默认数据卡用全局值，
+                // 否则「联通 LTE 卡」也会被标成 NSA 5G（真机截图里的串台现象）
+                dataRat = if (sub.isData) dataRat else readDataRat(sub.subId),
+                isDataSub = sub.isData,
+            )
+        }
+        val perSub = planAllSims(inputs)
+        val sims = perSub.ifEmpty {
+            fallbackSims(primary.cells, primaryParsed, dataRat, primary.subId)
+        }
+        simsCache = sims
+        simsCachedAt = now
+        return sims
+    }
+
+    /** 小区广播的 PLMN（MCC, MNC）；CDMA/读不到时返回 null。 */
+    private fun plmnOfCell(ci: CellInfo): Pair<String?, String?>? = when (ci) {
+        is CellInfoNr -> (ci.cellIdentity as? CellIdentityNr)?.let { it.mccString to it.mncString }
+        is CellInfoLte -> ci.cellIdentity.mccString to ci.cellIdentity.mncString
+        is CellInfoWcdma -> ci.cellIdentity.mccString to ci.cellIdentity.mncString
+        is CellInfoGsm -> ci.cellIdentity.mccString to ci.cellIdentity.mncString
+        is CellInfoTdscdma -> ci.cellIdentity.mccString to ci.cellIdentity.mncString
+        else -> null
+    }
+
+    /** 运营商名 → 内部键（用于把「别家小区」从这张卡的列表里剔除）。 */
+    private fun carrierKeyOf(carrier: String): String? = NetJudge.carrierKey(carrier)
+
+    /** 中国 PLMN → 运营商键。460-07 这类运营商自有 MNC 与小区广播的 460-00 都归到同一家。 */
+    private fun operatorKeyOf(mcc: String?, mnc: String?): String? = NetJudge.operatorKey(mcc, mnc)
+
+    /** 一张卡的小区列表（含运营商信息），供服务小区判定与 SIM 行共用。 */
+    private data class SubCells(
+        val subId: Int,
+        val slot: Int,
+        val carrier: String,
+        val mccMnc: String,
+        val cells: List<CellInfo>,
+        val isData: Boolean,
+    )
+
+    /**
+     * 按订阅把 `allCellInfo` 拆成「一张卡一份」。
+     *
+     * 没有 READ_PHONE_STATE / ROM 不返回订阅时退化为一份全局小区（isData=true），
+     * 保证老设备仍能工作，但双卡串台问题只有在能拿到订阅时才能根治。
+     */
+    private fun readSubCells(now: Long): List<SubCells> {
+        if (now - subCellsCachedAt < SIMS_REFRESH_MS && subCellsCache.isNotEmpty()) return subCellsCache
+        val dataSubId = try {
             SubscriptionManager.getDefaultDataSubscriptionId()
-        } catch (_: SecurityException) {
-            SubscriptionManager.INVALID_SUBSCRIPTION_ID
         } catch (_: Exception) {
             SubscriptionManager.INVALID_SUBSCRIPTION_ID
         }
-        val inputs = ArrayList<SimInput>(2)
+        val out = ArrayList<SubCells>(2)
         if (hasPhoneStatePermission) {
             val subs: List<SubscriptionInfo> = try {
                 sm?.activeSubscriptionInfoList.orEmpty()
@@ -262,7 +401,7 @@ class AndroidCellReader(private val context: Context) : CellSnapshotSource {
             }
             for (sub in subs) {
                 try {
-                    val subTm: TelephonyManager = try {
+                    val subTm = try {
                         tm.createForSubscriptionId(sub.subscriptionId)
                     } catch (_: Exception) {
                         tm
@@ -274,36 +413,62 @@ class AndroidCellReader(private val context: Context) : CellSnapshotSource {
                     } catch (_: Exception) {
                         emptyList()
                     }
-                    if (cells.isEmpty()) continue
                     // 运营商名优先级：卡自带 carrierName → displayName → 网络名 → 卡槽号
                     val carrier = sub.carrierName?.toString()?.takeIf { it.isNotBlank() }
                         ?: sub.displayName?.toString()?.takeIf { it.isNotBlank() }
                         ?: subTm.networkOperatorName?.takeIf { it.isNotBlank() }
                         ?: "SIM ${sub.simSlotIndex + 1}"
-                    inputs += SimInput(
+                    // 真机实测：HyperOS 的 createForSubscriptionId(subId).allCellInfo 会把两张卡的小区
+                    // 混在一起返回（移动卡的列表里出现联通 LTE）。按「小区广播的 PLMN → 运营商」
+                    // 与这张卡的运营商比对，剔除别家小区；认不出的一律保留（漫游/MVNO 兜底）。
+                    val expected = carrierKeyOf(carrier)
+                    val ownCells = if (expected == null) {
+                        cells
+                    } else {
+                        cells.filter { ci ->
+                            val plmn = plmnOfCell(ci) ?: return@filter true
+                            val key = operatorKeyOf(plmn.first, plmn.second) ?: return@filter true
+                            key == expected
+                        }.ifEmpty { cells }
+                    }
+                    out += SubCells(
+                        subId = sub.subscriptionId,
                         slot = sub.simSlotIndex.coerceAtLeast(0),
                         carrier = carrier,
                         mccMnc = subTm.networkOperator.orEmpty(),
-                        nrCells = if (Build.VERSION.SDK_INT >= 30) {
-                            cells.filterIsInstance<CellInfoNr>().mapNotNull { nrDescOf(it) }
-                        } else {
-                            emptyList()
-                        },
-                        lteCells = cells.filterIsInstance<CellInfoLte>().mapNotNull { lteDescOf(it) },
-                        dataRat = dataRat,
-                        isDataSub = defaultDataSubId == SubscriptionManager.INVALID_SUBSCRIPTION_ID ||
-                            sub.subscriptionId == defaultDataSubId,
+                        cells = ownCells,
+                        isData = dataSubId < 0 || sub.subscriptionId == dataSubId,
                     )
                 } catch (_: Exception) {
                     // 单张卡失败不影响其它卡
                 }
             }
         }
-        val perSub = planAllSims(inputs)
-        val sims = perSub.ifEmpty { fallbackSims(cellInfos, parsed, dataRat, defaultDataSubId) }
-        simsCache = sims
-        simsCachedAt = now
-        return sims
+        if (out.none { it.cells.isNotEmpty() }) {
+            val all = try {
+                tm.allCellInfo.orEmpty()
+            } catch (_: SecurityException) {
+                emptyList()
+            } catch (_: Exception) {
+                emptyList()
+            }
+            if (all.isNotEmpty()) {
+                val carrier = tm.networkOperatorName?.takeIf { it.isNotBlank() }
+                    ?: tm.simOperatorName?.takeIf { it.isNotBlank() }
+                    ?: "SIM 1"
+                out += SubCells(
+                    subId = dataSubId,
+                    slot = 0,
+                    carrier = carrier,
+                    mccMnc = tm.networkOperator.orEmpty(),
+                    cells = all,
+                    isData = true,
+                )
+            }
+        }
+        subCellsCache = out
+        subCellsCachedAt = now
+        return out
     }
 
     /** CellInfoNr → 纯描述。API < 30 没有可用的 NR identity，返回 null。 */
@@ -404,7 +569,26 @@ class AndroidCellReader(private val context: Context) : CellSnapshotSource {
      * 从 allCellInfo 里过滤掉，导致 UI 只能从 registered 小区推制式；这里用
      * `tm.dataNetworkType` 兜底判断「实际是 5G NSA」，读不到返回 null（保持旧行为）。
      */
-    private fun readDataRat(): Rat? {
+    /**
+     * 指定卡（默认数据卡）当前的数据网络类型。
+     *
+     * 必须按 subId 读：`tm.dataNetworkType` 只描述默认数据卡，双卡下用它给另一张卡
+     * 贴「5G NSA」标签就是串台。读不到返回 null（保持旧行为）。
+     */
+    private fun readDataRat(subId: Int = SubscriptionManager.INVALID_SUBSCRIPTION_ID): Rat? {
+        val subTm = if (subId >= 0) {
+            try {
+                tm.createForSubscriptionId(subId)
+            } catch (_: Exception) {
+                null
+            }
+        } else {
+            null
+        }
+        if (subTm != null) {
+            networkTypeOrNull { subTm.dataNetworkType }?.let { ratOfNetworkType(it) }?.let { return it }
+            networkTypeOrNull { subTm.voiceNetworkType }?.let { ratOfNetworkType(it) }?.let { return it }
+        }
         networkTypeOrNull { tm.dataNetworkType }?.let { ratOfNetworkType(it) }?.let { return it }
         // 语音网络类型仅作补充（个别 ROM 数据网络类型不可用但语音可用）
         return networkTypeOrNull { tm.voiceNetworkType }?.let { ratOfNetworkType(it) }

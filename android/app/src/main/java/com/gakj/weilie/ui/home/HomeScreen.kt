@@ -296,9 +296,6 @@ fun HomeScreen(
                 CapsuleEntry("单人模式", Icons.Rounded.Radar, Modifier.weight(1f), onNewTask)
                 Spacer(Modifier.size(8.dp))
                 CapsuleEntry("多人协同", Icons.Rounded.Groups, Modifier.weight(1f), onTeam)
-                Spacer(Modifier.size(8.dp))
-                // 最右：头像（同右上角）
-                AvatarCircle(40.dp, nick, logged) { onAvatar() }
             }
             Spacer(Modifier.navigationBarsPadding().height(14.dp))
         }
@@ -425,7 +422,8 @@ private fun CapsuleEntry(
     Row(
         modifier
             .clip(RoundedCornerShape(999.dp))
-            .background(Color(0x14FFFFFF))
+            // 跟随主题：浅色主题下 0x14FFFFFF 在白底上完全看不见，改用 ChipBg 自适应
+            .background(WColors.ChipBg)
             .clickable(onClick = onClick)
             .padding(vertical = 14.dp),
         horizontalArrangement = Arrangement.Center,

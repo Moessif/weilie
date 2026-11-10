@@ -11,6 +11,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
@@ -24,12 +25,14 @@ import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.gakj.weilie.core.cellmap.CellSite as KnownCell
 import com.gakj.weilie.core.model.SampleRecord
 import com.gakj.weilie.core.model.TargetCell
 import com.gakj.weilie.core.rating.SignalRating
 import com.gakj.weilie.core.sync.MemberView
 import com.gakj.weilie.core.sync.WsMsg
 import com.gakj.weilie.ui.theme.WColors
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.floor
@@ -110,8 +113,14 @@ class MapCamera {
         clamp()
     }
 
-    /** 让一组经纬度点全部可见（全览） */
-    fun fit(points: List<Pair<Double, Double>>) {
+    /**
+     * 让一组经纬度点全部可见（全览）。
+     *
+     * [maxFitZoom] 是自动取景的缩放上限：只有 1~2 个几乎重合的点时，
+     * 从 21 级开始递归会一路停在上限，等于"一有采样就拉到最大缩放"，
+     * 既看不出周边环境，也更容易踩到比例尺宽度溢出（Compose Constraints 262143px）的问题。
+     */
+    fun fit(points: List<Pair<Double, Double>>, maxFitZoom: Float = 18f) {
         if (points.isEmpty()) return
         val minLat = points.minOf { it.first }
         val maxLat = points.maxOf { it.first }
@@ -131,7 +140,7 @@ class MapCamera {
         ) {
             z -= 0.5
         }
-        zoom = z.toFloat().coerceIn(minZoom, maxZoom)
+        zoom = z.toFloat().coerceIn(minZoom, minOf(maxZoom, maxFitZoom))
         clamp()
     }
 
@@ -210,6 +219,8 @@ fun CanvasMap(
     markers: List<WsMsg.Marker> = emptyList(),
     zone: WsMsg.Zone? = null,
     zones: List<WsMsg.Zone> = emptyList(),
+    /** 自由绘制中的手指轨迹（WGS84）：实时折线预览 */
+    draftPath: List<Pair<Double, Double>> = emptyList(),
     camera: MapCamera = remember { MapCamera() },
     onTapLatLon: ((Double, Double) -> Unit)? = null,
     /** 当前位置（WGS84）：由地图引擎自己投影绘制，避免用相机公式在 Compose 层画导致与底图不同步 */
@@ -218,6 +229,23 @@ fun CanvasMap(
     trackArrows: Boolean = false,
     /** 基站站址图层 */
     cellSites: List<CellSite> = emptyList(),
+    /** 逐点分类显示：主区命中实心 / 邻区命中彩色实心 / 脱离目标空心 */
+    sampleMarks: Boolean = true,
+    /** 封闭区域（凹包 / 条带） */
+    area: ClosedArea? = null,
+    /** 基站理论覆盖区 */
+    theories: List<TheoryShape> = emptyList(),
+    /** 热力图图层（Canvas 兜底路径按下采样点色块绘制） */
+    heat: HeatLayer? = null,
+    /** 基站库（OpenCelliD 众包坐标）图层 */
+    cellLibrary: List<KnownCell> = emptyList(),
+    /** 基站库中当前选中的站址 key */
+    selectedCellKey: String? = null,
+    /** 基站库站址被点击 */
+    onCellSiteClick: ((KnownCell) -> Unit)? = null,
+    /** 自由绘制参数（Canvas 兜底路径不拦截手势，仅保持签名一致） */
+    drawMode: Boolean = false,
+    onDrawPoint: ((Double, Double) -> Unit)? = null,
     /** 标点（拍照/可疑设备）被点击：回传原始 WsMsg.Marker（Canvas 兜底路径用命中测试实现） */
     onMarkerClick: ((WsMsg.Marker) -> Unit)? = null,
 ) {
@@ -231,10 +259,11 @@ fun CanvasMap(
                     camera.panBy(pan.x.toDouble(), pan.y.toDouble())
                 }
             }
-            .pointerInput(onTapLatLon, onMarkerClick, markers) {
+            .pointerInput(onTapLatLon, onMarkerClick, markers, cellLibrary) {
                 detectTapGestures { offset ->
-                    // 先做标点命中测试（24dp 内视为点中图标），未命中再当作地图点选
-                    val hitR = 24.dp.toPx()
+                    // 先做标点命中测试（16dp 内视为点中图标），未命中再当作地图点选。
+                    // 24dp 时用户反馈「点标点旁边的空白也会弹出详情」，收紧到图标本身大小。
+                    val hitR = 16.dp.toPx()
                     val mpp = camera.metersPerPixel.coerceAtLeast(0.01)
                     val cx = size.width / 2.0
                     val cy = size.height / 2.0
@@ -245,8 +274,16 @@ fun CanvasMap(
                         val dy = cy - (mk.lat - camera.centerLat) * ky - offset.y
                         dx * dx + dy * dy <= hitR * hitR
                     }
+                    val cellHit = cellLibrary.lastOrNull { site ->
+                        val dx = cx + (site.lon - camera.centerLon) * kx - offset.x
+                        val dy = cy - (site.lat - camera.centerLat) * ky - offset.y
+                        dx * dx + dy * dy <= hitR * hitR
+                    }
+                    val cellCb = onCellSiteClick
                     val cb = onMarkerClick
-                    if (hit != null && cb != null) {
+                    if (cellHit != null && cellCb != null) {
+                        cellCb(cellHit)
+                    } else if (hit != null && cb != null) {
                         cb(hit)
                     } else {
                         val p = screenToLatLon(
@@ -263,6 +300,14 @@ fun CanvasMap(
         // 2. 队长下发的任务范围（单圈与多块分片均支持）
         zone?.let { drawZone(it, camera) }
         zones.forEach { if (it !== zone) drawZone(it, camera) }
+        // 2.1 自由绘制中的手指轨迹（实时折线）
+        if (draftPath.size >= 2) {
+            val pts = draftPath.map { project(it.first, it.second, camera) }
+            val path = Path()
+            path.moveTo(pts[0].x, pts[0].y)
+            for (i in 1 until pts.size) path.lineTo(pts[i].x, pts[i].y)
+            drawPath(path, WColors.Secondary, style = Stroke(width = 3.dp.toPx()))
+        }
         // 3. 拟合边界（缓冲带填充 → 凸包 → 等值线）
         bufferedLatLon?.takeIf { it.size >= 3 }?.let {
             drawPath(ringPath(it, camera, true), WColors.Primary.copy(alpha = 0.10f))
@@ -281,20 +326,95 @@ fun CanvasMap(
                 style = Stroke(width = 1.5.dp.toPx()),
             )
         }
+        // 3.5 信号热力图（Canvas 兜底：按包围盒加一层暖光，细粒度交给百度底图路径）
+        heat?.let { h ->
+            val a = project(h.maxLat, h.minLon, camera)
+            val b = project(h.minLat, h.maxLon, camera)
+            val l = minOf(a.x, b.x)
+            val t = minOf(a.y, b.y)
+            drawRect(
+                Color(0x22F59E0B),
+                topLeft = Offset(l, t),
+                size = Size(abs(b.x - a.x), abs(b.y - a.y)),
+            )
+        }
+        // 3.6 封闭区域（凹包 / 条带）：半透明填充不遮底图
+        area?.ring?.takeIf { it.size >= 3 }?.let {
+            drawPath(ringPath(it, camera, true), Color(0x5534D399))
+            drawPath(
+                ringPath(it, camera, true),
+                Color(0xCC34D399.toInt()),
+                style = Stroke(width = 2.dp.toPx()),
+            )
+        }
+        // 3.7 基站理论覆盖区（蓝=理论 / 橙=TA 距离带）
+        theories.forEach { t ->
+            when (t.kind) {
+                TheoryShape.Kind.CIRCLE -> {
+                    val o = project(t.centerLat, t.centerLon, camera)
+                    val r = (t.radiusM / camera.metersPerPixel).toFloat()
+                    drawCircle(Color(0x1F3B82F6), radius = r, center = o)
+                    drawCircle(Color(0xCC3B82F6.toInt()), radius = r, center = o, style = Stroke(1.5.dp.toPx()))
+                }
+                TheoryShape.Kind.RING -> {
+                    val o = project(t.centerLat, t.centerLon, camera)
+                    val rOut = (t.radiusM / camera.metersPerPixel).toFloat()
+                    val rIn = (t.innerRadiusM / camera.metersPerPixel).toFloat()
+                    drawCircle(Color(0x33FB923C), radius = rOut, center = o, style = Stroke((rOut - rIn).coerceAtLeast(2f)))
+                }
+                TheoryShape.Kind.SECTOR -> {
+                    val o = project(t.centerLat, t.centerLon, camera)
+                    val r = (t.radiusM / camera.metersPerPixel).toFloat()
+                    drawArc(
+                        Color(0x1F3B82F6),
+                        startAngle = t.startBearing - 90f,
+                        sweepAngle = t.sweepDeg,
+                        useCenter = true,
+                        topLeft = Offset(o.x - r, o.y - r),
+                        size = Size(r * 2, r * 2),
+                    )
+                }
+            }
+        }
         // 4. 目标参考圈 + 十字准星
         target?.let { drawTarget(it, camera) }
         // 5. 轨迹
         drawTrajectory(samples, camera)
-        // 6. 样本点（RSRP 着色）
-        samples.forEach { s ->
-            val o = project(s.lat, s.lon, camera)
-            if (o.x < -40 || o.y < -40 || o.x > size.width + 40 || o.y > size.height + 40) return@forEach
-            val level = SignalRating.level(s.rsrp)
-            val c = if (level < 0) Color(0xFF94A3B8) else Color(SignalRating.colorArgb(level).toInt())
-            drawCircle(c, radius = 4.dp.toPx(), center = o)
-            drawCircle(Color(0xB30B1020), radius = 4.dp.toPx(), center = o, style = Stroke(1.dp.toPx()))
-            if (s.onTarget) {
-                drawCircle(WColors.Target, radius = 7.dp.toPx(), center = o, style = Stroke(1.5.dp.toPx()))
+        // 6. 样本点：逐点分类（主区实心 / 邻区彩色实心 / 脱离空心）
+        if (sampleMarks) {
+            samples.forEach { s ->
+                val o = project(s.lat, s.lon, camera)
+                if (o.x < -40 || o.y < -40 || o.x > size.width + 40 || o.y > size.height + 40) return@forEach
+                when (SampleMark.of(s)) {
+                    SampleMark.MAIN -> {
+                        drawCircle(Color(MarkStyles.MAIN_FILL), radius = 4.5.dp.toPx(), center = o)
+                        drawCircle(Color.White, radius = 4.5.dp.toPx(), center = o, style = Stroke(1.dp.toPx()))
+                    }
+                    SampleMark.NEIGHBOR -> {
+                        drawCircle(Color(MarkStyles.baseColor(s.servingCi)), radius = 5.dp.toPx(), center = o)
+                        drawCircle(Color.White, radius = 5.dp.toPx(), center = o, style = Stroke(1.dp.toPx()))
+                    }
+                    SampleMark.OUT -> {
+                        drawCircle(
+                            Color(MarkStyles.OUT_RING),
+                            radius = 3.5.dp.toPx(),
+                            center = o,
+                            style = Stroke(1.5.dp.toPx()),
+                        )
+                    }
+                }
+            }
+        } else {
+            samples.forEach { s ->
+                val o = project(s.lat, s.lon, camera)
+                if (o.x < -40 || o.y < -40 || o.x > size.width + 40 || o.y > size.height + 40) return@forEach
+                val level = SignalRating.level(s.rsrp)
+                val c = if (level < 0) Color(0xFF94A3B8) else Color(SignalRating.colorArgb(level).toInt())
+                drawCircle(c, radius = 4.dp.toPx(), center = o)
+                drawCircle(Color(0xB30B1020), radius = 4.dp.toPx(), center = o, style = Stroke(1.dp.toPx()))
+                if (s.onTarget) {
+                    drawCircle(WColors.Target, radius = 7.dp.toPx(), center = o, style = Stroke(1.5.dp.toPx()))
+                }
             }
         }
         // 7. 队友
@@ -314,35 +434,46 @@ fun CanvasMap(
                 style = TextStyle(color = WColors.Teammate, fontSize = 9.sp),
             )
         }
-        // 8. 标记（旗标 / 可疑）
+        // 8. 标记（取证类型 / 手动旗标）——与百度渲染保持同一套语义：
+        //    彩色圆底 + emoji，一眼区分普通取证/隐蔽摄像头/可疑摄像头/可疑设备
         markers.forEach { mk ->
             val o = project(mk.lat, mk.lon, camera)
-            when (mk.kind) {
-                "SUSPICIOUS" -> {
-                    drawCircle(WColors.Danger, radius = 9.dp.toPx(), center = o)
-                    drawText(
-                        textMeasurer = textMeasurer,
-                        text = "!",
-                        topLeft = Offset(o.x - 3f, o.y - 8.dp.toPx()),
-                        style = TextStyle(color = Color(0xFF0B1020), fontSize = 12.sp),
-                    )
-                }
-                else -> { // FLAG
-                    drawLine(
-                        WColors.Warning,
-                        start = Offset(o.x, o.y + 8.dp.toPx()),
-                        end = Offset(o.x, o.y - 10.dp.toPx()),
-                        strokeWidth = 2.dp.toPx(),
-                        cap = StrokeCap.Round,
-                    )
-                    val flag = Path().apply {
-                        moveTo(o.x, o.y - 10.dp.toPx())
-                        lineTo(o.x + 11.dp.toPx(), o.y - 6.dp.toPx())
-                        lineTo(o.x, o.y - 2.dp.toPx())
-                        close()
-                    }
-                    drawPath(flag, WColors.Warning)
-                }
+            val visual = mk.visualKind()
+            val r = 9.dp.toPx()
+            drawCircle(Color(0x330B1020), radius = r + 1.dp.toPx(), center = Offset(o.x, o.y + 1.dp.toPx()))
+            drawCircle(Color(visual.bg), radius = r, center = o)
+            drawCircle(Color.White, radius = r, center = o, style = Stroke(1.5.dp.toPx()))
+            drawText(
+                textMeasurer = textMeasurer,
+                text = visual.emoji,
+                topLeft = Offset(o.x - 5.dp.toPx(), o.y - 7.dp.toPx()),
+                style = TextStyle(fontSize = 11.sp),
+            )
+            val shown = mk.name.trim().ifEmpty { "" }
+            if (shown.isNotEmpty()) {
+                drawText(
+                    textMeasurer = textMeasurer,
+                    text = if (shown.length > 6) shown.take(6) + "…" else shown,
+                    topLeft = Offset(o.x + 8.dp.toPx(), o.y - 18.dp.toPx()),
+                    style = TextStyle(color = WColors.OnBg, fontSize = 10.sp),
+                )
+            }
+        }
+        // 8.5 基站库站址（OpenCelliD）：制式着色小点，选中态加白环
+        if (cellLibrary.isNotEmpty()) {
+            val maxSites = 200
+            val step = if (cellLibrary.size > maxSites) (cellLibrary.size / maxSites) + 1 else 1
+            cellLibrary.forEachIndexed { i, site ->
+                if (i % step != 0) return@forEachIndexed
+                if (!site.isValid()) return@forEachIndexed
+                val o = project(site.lat, site.lon, camera)
+                if (o.x < -30 || o.y < -30 || o.x > size.width + 30 || o.y > size.height + 30) return@forEachIndexed
+                val color = cellSiteColor(site.rat)
+                val selected = selectedCellKey != null && site.key == selectedCellKey
+                val r = if (selected) 9.dp.toPx() else 6.dp.toPx()
+                drawCircle(color.copy(alpha = 0.85f), radius = r, center = o)
+                drawCircle(Color.White, radius = r, center = o, style = Stroke(1.5.dp.toPx()))
+                if (selected) drawCircle(color, radius = r + 3.dp.toPx(), center = o, style = Stroke(2.dp.toPx()))
             }
         }
         // 9. 基站站址（基站图层）
@@ -479,16 +610,31 @@ private fun DrawScope.drawZone(z: WsMsg.Zone, camera: MapCamera) {
 
 private fun DrawScope.drawTrajectory(samples: List<SampleRecord>, camera: MapCamera) {
     if (samples.size < 2) return
-    val path = Path()
-    var started = false
-    samples.forEach { s ->
-        val o = project(s.lat, s.lon, camera)
-        if (!started) {
-            path.moveTo(o.x, o.y)
-            started = true
-        } else {
-            path.lineTo(o.x, o.y)
+    // 命中段（主区/邻区）用轨迹蓝，脱离目标段用灰色：让"走出去的那一段"一眼可辨
+    val hitColor = WColors.Track.copy(alpha = 0.75f)
+    val outColor = Color(0xFF94A3B8).copy(alpha = 0.85f)
+    fun drawRun(from: Int, to: Int, isOut: Boolean) {
+        if (to - from < 1) return
+        val p = Path()
+        for (i in from..to) {
+            val o = project(samples[i].lat, samples[i].lon, camera)
+            if (i == from) p.moveTo(o.x, o.y) else p.lineTo(o.x, o.y)
+        }
+        drawPath(
+            p,
+            if (isOut) outColor else hitColor,
+            style = Stroke(width = if (isOut) 1.8.dp.toPx() else 2.dp.toPx()),
+        )
+    }
+    var runStart = 0
+    var runOut = SampleMark.of(samples[0]) == SampleMark.OUT
+    for (i in 1 until samples.size) {
+        val out = SampleMark.of(samples[i]) == SampleMark.OUT
+        if (out != runOut) {
+            drawRun(runStart, i, runOut)
+            runStart = i
+            runOut = out
         }
     }
-    drawPath(path, WColors.Track.copy(alpha = 0.75f), style = Stroke(width = 2.dp.toPx()))
+    drawRun(runStart, samples.lastIndex, runOut)
 }
