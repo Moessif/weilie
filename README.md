@@ -97,6 +97,12 @@ java -jar weilie-server-all.jar          # 默认 0.0.0.0:8080
 - `dist/weilie-server-v0.11.2-all.jar`：服务端可执行 fatJar（随源码入库，可直接 `java -jar` 启动）
 - `dist/` 仅供放置已构建产物；`dist/*.apk` 已在 `.gitignore` 中排除
 
+## 战报（全版本更新记录）
+
+- [完整版战报（v0.1 → v0.11.2，26 个版本逐版记录）](docs/战报-v0.1-v0.11.2-完整版.md)
+- 长图海报：[docs/assets/战报-v0.1-v0.11.2-完整版.png](docs/assets/战报-v0.1-v0.11.2-完整版.png)
+- 生成脚本：[tools/make_battle_report_full.py](tools/make_battle_report_full.py)
+
 ## 第三方依赖与注意事项
 
 - 地图：百度地图 Android SDK（`android/app/libs/BaiduLBS_Android.aar` + `jniLibs`）。**AK 与包名/SHA1 绑定需自行在百度控制台配置**，仓库内 `AndroidManifest.xml` 中的 `com.baidu.lbsapi.API_KEY` 仅为开发期占位，正式使用请替换为自己的 Key。
