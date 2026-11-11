@@ -129,6 +129,35 @@ sealed class WsMsg {
     @SerialName("ping")
     data class Ping(val ts: Long = System.currentTimeMillis()) : WsMsg()
 
+    // ---------- 语音对讲（客户端上行，服务端转发给同一房间的其他成员）----------
+
+    /** 开始说话：接收方据此显示「X 正在讲话」并准备播放 */
+    @Serializable
+    @SerialName("audioStart")
+    data class AudioStart(
+        val userId: String,
+        val byName: String = "",
+        val ts: Long = 0L,
+    ) : WsMsg()
+
+    /** 一帧语音：16kHz / 单声道 / 16bit PCM 的 base64，约 100ms 一帧 */
+    @Serializable
+    @SerialName("audioChunk")
+    data class AudioChunk(
+        val userId: String,
+        val seq: Int = 0,
+        val data: String = "",
+        val ts: Long = 0L,
+    ) : WsMsg()
+
+    /** 结束说话 */
+    @Serializable
+    @SerialName("audioStop")
+    data class AudioStop(
+        val userId: String,
+        val ts: Long = 0L,
+    ) : WsMsg()
+
     // ---------- Server -> Client ----------
 
     @Serializable

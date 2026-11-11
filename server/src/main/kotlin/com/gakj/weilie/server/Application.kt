@@ -49,18 +49,25 @@ fun main() {
     val photoRegistry = PhotoRegistry(dataDir)
     // 基站库：OpenCelliD 代理 + 瓦片缓存（API Key 只从环境变量读，不下发到 App）
     val cellLibrary = CellLibrary(dataDir)
+    // 取证照片原图：data/photos/<code>.jpg，供同一房间的其他队员查看
+    val photoFiles = PhotoFiles(dataDir)
 
     // 启动时从 data/snapshot.json 恢复房间（邀请码/zone/markers）
     val restored = store.loadSnapshot()
     if (restored > 0) log.info("已从快照恢复 {} 个房间", restored)
 
     embeddedServer(Netty, port = 8080, host = "0.0.0.0") {
-        module(store, photoRegistry, cellLibrary)
+        module(store, photoRegistry, cellLibrary, photoFiles)
     }.start(wait = true)
 }
 
 /** Ktor 应用装配：WebSocket + JSON 内容协商 + 照片验真 REST + 路由 + 30s 快照调度 */
-fun Application.module(store: RoomStore, photoRegistry: PhotoRegistry, cellLibrary: CellLibrary = CellLibrary(Path.of("data"))) {
+fun Application.module(
+    store: RoomStore,
+    photoRegistry: PhotoRegistry,
+    cellLibrary: CellLibrary = CellLibrary(Path.of("data")),
+    photoFiles: PhotoFiles = PhotoFiles(Path.of("data")),
+) {
     install(WebSockets) {
         // 服务端协议层保活：快速发现移动网络半开连接。
         // 死连接（App 被强杀/断网未挥手）最多约 15s(下一个 ping) + 30s(超时) 内被协议层断开，
@@ -93,6 +100,8 @@ fun Application.module(store: RoomStore, photoRegistry: PhotoRegistry, cellLibra
         photoVerifyRoutes(photoRegistry)
         // 第三方网页验真：/v/{code} 验真页、/api/photo/verify/file 文件哈希比对
         photoWebVerifyRoutes(photoRegistry)
+        // 取证照片原图：/api/photo/upload（上传）、/api/photo/file（下载）
+        photoFileRoutes(photoFiles)
         // 基站库：/api/cells/near、/api/cells/cell、/api/cells/stats
         cellLibraryRoutes(cellLibrary)
         roomWsRoutes(store)

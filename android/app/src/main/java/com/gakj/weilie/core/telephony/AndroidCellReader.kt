@@ -35,8 +35,16 @@ import com.gakj.weilie.core.model.CellIdentity
 import com.gakj.weilie.core.model.Rat
 import com.gakj.weilie.core.model.SignalData
 import com.gakj.weilie.core.model.WifiAp
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 /** 邻区及其信号测量值（[CellIdentity] 本身不携带 RSRP，专家面板展示邻区强度用）。 */
 data class NeighborCell(
@@ -129,6 +137,22 @@ class AndroidCellReader(private val context: Context) : CellSnapshotSource {
     private var listener: PhoneStateListener? = null
     private var listening = false
 
+    /**
+     * Shizuku（shell 身份）读到的完整小区列表。多数 ROM 对普通应用只返回驻留小区，
+     * 授权 Shizuku 后从 `dumpsys telephony.registry` 补上邻区；未授权时始终为空、行为与旧版一致。
+     */
+    @Volatile
+    private var privileged: List<Pair<CellIdentity, SignalData?>> = emptyList()
+
+    @Volatile
+    private var privilegedUsed = false
+
+    private var privilegedScope: CoroutineScope? = null
+    private var privilegedJob: Job? = null
+
+    /** Shizuku 是否安装（用于邻区为空时给出「去设置里授权」的引导），只查一次 */
+    private val shizukuInstalled: Boolean by lazy { ShizukuCells.isInstalled(context) }
+
     private val hasLocationPermission: Boolean
         get() = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
@@ -138,6 +162,7 @@ class AndroidCellReader(private val context: Context) : CellSnapshotSource {
     override fun start() {
         if (listening) return
         listening = true
+        startPrivilegedLoop()
         if (!hasLocationPermission) {
             // 无定位权限时 getAllCellInfo 会抛 SecurityException，快照保持空，UI 引导授权
             return
@@ -175,6 +200,7 @@ class AndroidCellReader(private val context: Context) : CellSnapshotSource {
     override fun stop() {
         if (!listening) return
         listening = false
+        stopPrivilegedLoop()
         try {
             if (Build.VERSION.SDK_INT >= 31 && callback31 != null) {
                 @Suppress("UNCHECKED_CAST")
@@ -264,6 +290,18 @@ class AndroidCellReader(private val context: Context) : CellSnapshotSource {
             neighbors.add(p.first)
             neighborCells.add(NeighborCell(p.first, p.second))
         }
+        // 3) Shizuku 增强：多数 ROM 只返回驻留小区，授权后从 shell 全量列表补邻区。
+        //    只补系统没给的（按 rat+ci 去重），且只补未注册小区——服务小区判定仍以系统 API 为准。
+        val known = parsed.map { it.first.rat to it.first.ci }.toHashSet()
+        var shizukuFilled = false
+        for ((id, sig) in privileged) {
+            if (id.isRegistered) continue
+            if (!known.add(id.rat to id.ci)) continue
+            neighbors.add(id)
+            neighborCells.add(NeighborCell(id, sig))
+            shizukuFilled = true
+        }
+        privilegedUsed = shizukuFilled
         val wifi = readWifi()
         val nrNeighborCount = neighbors.count { it.rat == Rat.NR }
         val anchorRat = when (netMode) {
@@ -273,8 +311,11 @@ class AndroidCellReader(private val context: Context) : CellSnapshotSource {
         }
         val sims = readSims(subs, primary, parsed, dataRat, now)
         val neighborNote = when {
+            shizukuFilled -> ""
             neighbors.isNotEmpty() -> ""
             netMode == NetMode.SA -> "5G SA 模式下多数机型不提供邻区（系统限制）"
+            shizukuInstalled && !ShizukuCells.isAuthorized() ->
+                "当前系统未返回邻区：可在「设置 → 邻区增强（Shizuku）」授权后读取完整邻区"
             else -> "当前系统/芯片限制，未返回邻区（不影响主区命中判定）"
         }
         _snapshot.value = CellSnapshot(
@@ -756,7 +797,33 @@ class AndroidCellReader(private val context: Context) : CellSnapshotSource {
     private fun CellSignalStrengthLte.rssiCompat(): Int? = if (Build.VERSION.SDK_INT >= 29) rssi.takeIf { it != Int.MAX_VALUE } else null
     private fun CellSignalStrengthLte.sinrCompat(): Int? = if (Build.VERSION.SDK_INT >= 29) rssnr.takeIf { it != Int.MAX_VALUE }?.let { (it / 10.0).toInt() } else null
 
+    /** 授权 Shizuku 后每 2 秒读一次系统全量小区；未授权直接返回，不影响原有流程 */
+    private fun startPrivilegedLoop() {
+        if (privilegedScope != null) return
+        if (!ShizukuCells.isAuthorized()) return
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        privilegedScope = scope
+        privilegedJob = scope.launch {
+            while (isActive) {
+                val cells = ShizukuCells.readRegistry()
+                if (cells != null) privileged = ShizukuCells.toPairs(cells)
+                delay(PRIVILEGED_REFRESH_MS)
+            }
+        }
+    }
+
+    private fun stopPrivilegedLoop() {
+        privilegedJob?.cancel()
+        privilegedJob = null
+        privilegedScope?.cancel()
+        privilegedScope = null
+        privileged = emptyList()
+        privilegedUsed = false
+    }
+
     private companion object {
+        /** Shizuku 刷新间隔：dumpsys 有进程开销，2 秒足够跟上邻区变化 */
+        const val PRIVILEGED_REFRESH_MS = 2_000L
         /** 各卡小区/订阅表刷新间隔：避免 CellInfo 回调一秒多次时对每张卡重复 IPC */
         const val SIMS_REFRESH_MS = 1_000L
     }

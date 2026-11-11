@@ -2,7 +2,6 @@ package com.gakj.weilie.ui.history
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,9 +19,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.History
@@ -32,6 +31,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -53,14 +55,17 @@ import com.gakj.weilie.ui.common.EmptyState
 import com.gakj.weilie.ui.common.GlassTextButton
 import com.gakj.weilie.ui.common.ScreenTopBar
 import com.gakj.weilie.ui.common.StaggerIn
-import com.gakj.weilie.ui.common.StatusBadge
-import com.gakj.weilie.ui.common.fmtDay
 import com.gakj.weilie.ui.common.fmtDur
 import com.gakj.weilie.ui.common.fmtTs
 import com.gakj.weilie.ui.common.toast
+import com.gakj.weilie.ui.theme.Eyebrow
 import com.gakj.weilie.ui.theme.GlassCard
+import com.gakj.weilie.ui.theme.Hairline.hairline
 import com.gakj.weilie.ui.theme.MonoText
+import com.gakj.weilie.ui.theme.Radius
+import com.gakj.weilie.ui.theme.Space
 import com.gakj.weilie.ui.theme.WColors
+import java.util.Calendar
 
 /**
  * 一次删除请求：
@@ -124,7 +129,12 @@ fun HistoryScreen(onBack: () -> Unit, onOpenSession: (String) -> Unit) {
     ) {
         ScreenTopBar(
             title = if (selectMode) "已选 ${selected.size} 项" else "历史记录",
-            subtitle = if (selectMode) "点卡片多选，再点一次取消" else "全部走测会话（长按可删除）",
+            subtitle = if (selectMode) {
+                "点卡片多选，再点一次取消"
+            } else {
+                val samplesTotal = sessions.sumOf { it.sampleCount }
+                "共 ${sessions.size} 次走测 · ${samplesTotal} 个样本 · 长按可删除"
+            },
             onBack = {
                 if (selectMode) {
                     selectMode = false
@@ -163,26 +173,35 @@ fun HistoryScreen(onBack: () -> Unit, onOpenSession: (String) -> Unit) {
             Box(Modifier.weight(1f)) {
                 LazyColumn(
                     Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 24.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    contentPadding = PaddingValues(start = Space.screenH, end = Space.screenH, top = Space.x1, bottom = Space.x6),
+                    verticalArrangement = Arrangement.spacedBy(Space.x3),
                 ) {
-                    itemsIndexed(sessions, key = { _, s -> s.taskId }) { i, s ->
-                        StaggerIn(i) {
-                            SessionCard(
-                                m = s,
-                                selecting = selectMode,
-                                isSelected = selected.contains(s.taskId),
-                                onClick = {
-                                    if (selectMode) toggle(s.taskId) else onOpenSession(s.taskId)
-                                },
-                                onLongClick = {
-                                    if (selectMode) {
-                                        toggle(s.taskId)
-                                    } else {
-                                        request = DeleteRequest(listOf(s.taskId), all = false)
-                                    }
-                                },
-                            )
+                    // 日期分组：开始时间按天归并，组标题用 Eyebrow
+                    val groups = sessions.groupBy { dayKey(it.startedAtEpochMs) }
+                    groups.entries.forEachIndexed { gi, (day, list) ->
+                        item(key = "day-$day") {
+                            StaggerIn(gi) {
+                                Eyebrow(dayLabel(day), Modifier.padding(top = if (gi == 0) Space.x1 else Space.x4, bottom = Space.x1))
+                            }
+                        }
+                        itemsIndexed(list, key = { _, s -> s.taskId }) { i, s ->
+                            StaggerIn(i) {
+                                SessionCard(
+                                    m = s,
+                                    selecting = selectMode,
+                                    isSelected = selected.contains(s.taskId),
+                                    onClick = {
+                                        if (selectMode) toggle(s.taskId) else onOpenSession(s.taskId)
+                                    },
+                                    onLongClick = {
+                                        if (selectMode) {
+                                            toggle(s.taskId)
+                                        } else {
+                                            request = DeleteRequest(listOf(s.taskId), all = false)
+                                        }
+                                    },
+                                )
+                            }
                         }
                     }
                 }
@@ -193,13 +212,13 @@ fun HistoryScreen(onBack: () -> Unit, onOpenSession: (String) -> Unit) {
                     Modifier
                         .fillMaxWidth()
                         .navigationBarsPadding()
-                        .padding(horizontal = 20.dp, vertical = 10.dp),
+                        .padding(horizontal = Space.screenH, vertical = Space.x3),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     GlassTextButton("全部删除", Modifier.weight(1f)) {
                         request = DeleteRequest(sessions.map { it.taskId }, all = true)
                     }
-                    Spacer(Modifier.width(10.dp))
+                    Spacer(Modifier.width(Space.x3))
                     GlassTextButton(
                         text = if (selected.isEmpty()) "删除选中" else "删除选中（${selected.size}）",
                         modifier = Modifier.weight(1f),
@@ -266,76 +285,104 @@ private fun SessionCard(
     onClick: () -> Unit,
     onLongClick: () -> Unit,
 ) {
+    // 选中态 = 实心主色薄底 + 发丝描边（不用叠加粗边框）
     val cardModifier = Modifier
         .fillMaxWidth()
         .then(
             if (isSelected) {
-                Modifier.border(1.5.dp, WColors.Primary, RoundedCornerShape(20.dp))
+                Modifier
+                    .background(WColors.Primary.copy(alpha = 0.14f), Radius.lgShape)
+                    .hairline(Radius.lgShape, strong = true)
             } else {
                 Modifier
             },
         )
-    GlassCard(cardModifier, onClick = onClick, onLongClick = onLongClick) {
-        Column {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (selecting) {
-                    Icon(
-                        if (isSelected) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
-                        contentDescription = if (isSelected) "已选中" else "未选中",
-                        tint = if (isSelected) WColors.Primary else WColors.OnBgDim,
-                        modifier = Modifier.size(22.dp),
-                    )
-                    Spacer(Modifier.width(10.dp))
-                } else {
-                    Box(
-                        Modifier
-                            .size(38.dp)
-                            .background(WColors.Primary.copy(alpha = 0.15f), CircleShape),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(Icons.Rounded.Description, contentDescription = null, tint = WColors.Primary, modifier = Modifier.size(20.dp))
-                    }
-                    Spacer(Modifier.size(12.dp))
+    GlassCard(cardModifier, shape = Radius.lgShape, onClick = onClick, onLongClick = onLongClick) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (selecting) {
+                Icon(
+                    if (isSelected) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
+                    contentDescription = if (isSelected) "已选中" else "未选中",
+                    tint = if (isSelected) WColors.Primary else WColors.OnBgDim,
+                    modifier = Modifier.size(22.dp),
+                )
+            } else {
+                Box(
+                    Modifier
+                        .size(38.dp)
+                        .background(WColors.Primary.copy(alpha = 0.15f), CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Icons.Rounded.Description, contentDescription = null, tint = WColors.Primary, modifier = Modifier.size(20.dp))
                 }
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        m.title.ifBlank { "未命名任务" },
-                        style = MaterialTheme.typography.titleMedium,
-                        color = WColors.OnBg,
-                        maxLines = 1,
-                    )
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        "ID ${m.taskId} · ${fmtDay(m.startedAtEpochMs)}",
-                        style = MonoText.style,
-                        color = WColors.OnBgDim,
-                    )
-                }
-                StatusBadge("${m.sampleCount} 点", WColors.Primary)
             }
-            Spacer(Modifier.height(10.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                StatusBadge(formatShort(m.targetFormat), WColors.Secondary)
-                Spacer(Modifier.size(8.dp))
-                val ended = m.endedAtEpochMs
-                val dur = if (ended != null) fmtDur(ended - m.startedAtEpochMs) else "进行中"
-                StatusBadge(dur, if (ended != null) WColors.OnBgDim else WColors.Warning)
-                Spacer(Modifier.weight(1f))
-                if (selecting) {
-                    Icon(
-                        Icons.Rounded.DeleteOutline,
-                        contentDescription = null,
-                        tint = WColors.OnBgDim.copy(alpha = 0.5f),
-                        modifier = Modifier.size(16.dp),
-                    )
-                    Spacer(Modifier.size(6.dp))
-                }
+            Spacer(Modifier.width(Space.x3))
+            Column(Modifier.weight(1f)) {
                 Text(
-                    fmtTs(m.startedAtEpochMs),
-                    style = MaterialTheme.typography.labelSmall,
+                    m.title.ifBlank { "未命名任务" },
+                    style = MaterialTheme.typography.titleMedium,
+                    color = WColors.OnBg,
+                    maxLines = 1,
+                )
+                Spacer(Modifier.height(Space.x1))
+                Text(
+                    metaText(m),
+                    style = MonoText.style,
                     color = WColors.OnBgDim,
+                    maxLines = 1,
                 )
             }
+            Spacer(Modifier.width(Space.x2))
+            if (selecting) {
+                Icon(
+                    Icons.Rounded.DeleteOutline,
+                    contentDescription = null,
+                    tint = WColors.OnBgDim.copy(alpha = 0.5f),
+                    modifier = Modifier.size(16.dp),
+                )
+            } else {
+                Icon(
+                    Icons.Rounded.ChevronRight,
+                    contentDescription = null,
+                    tint = WColors.OnBgDim,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+        }
+    }
+}
+
+/** 单行元信息（等宽）：样本数 · 时长 · 目标 · 时间 */
+private fun metaText(m: SessionManifest): AnnotatedString {
+    val ended = m.endedAtEpochMs
+    val dur = if (ended != null) fmtDur(ended - m.startedAtEpochMs) else "进行中"
+    return buildAnnotatedString {
+        append("${m.sampleCount} 点 · ")
+        pushStyle(SpanStyle(color = if (ended != null) WColors.OnBgDim else WColors.Warning))
+        append(dur)
+        pop()
+        append(" · ${formatShort(m.targetFormat)} · ${fmtTs(m.startedAtEpochMs)}")
+    }
+}
+
+/** 按天分组键（本地时区） */
+private fun dayKey(ts: Long): Int {
+    val c = Calendar.getInstance().apply { timeInMillis = ts }
+    return c.get(Calendar.YEAR) * 1000 + c.get(Calendar.DAY_OF_YEAR)
+}
+
+private fun dayLabel(key: Int): String {
+    val today = Calendar.getInstance()
+    val todayKey = today.get(Calendar.YEAR) * 1000 + today.get(Calendar.DAY_OF_YEAR)
+    return when (key) {
+        todayKey -> "今天"
+        todayKey - 1 -> "昨天"
+        else -> {
+            val c = Calendar.getInstance().apply {
+                set(Calendar.YEAR, key / 1000)
+                set(Calendar.DAY_OF_YEAR, key % 1000)
+            }
+            "${c.get(Calendar.MONTH) + 1}月${c.get(Calendar.DAY_OF_MONTH)}日"
         }
     }
 }

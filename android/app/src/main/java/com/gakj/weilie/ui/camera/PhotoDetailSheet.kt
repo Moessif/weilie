@@ -2,7 +2,13 @@ package com.gakj.weilie.ui.camera
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,18 +22,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.BrokenImage
-import androidx.compose.material.icons.rounded.Cancel
-import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.RemoveCircleOutline
-import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -46,25 +47,29 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gakj.weilie.core.photo.PhotoRecord
+import com.gakj.weilie.core.verify.RemotePhoto
 import com.gakj.weilie.core.verify.VerifyEntry
 import com.gakj.weilie.core.verify.VerifyResult
 import com.gakj.weilie.ui.AppGraph
+import com.gakj.weilie.ui.common.EmptyState
 import com.gakj.weilie.ui.common.KeyValueRow
 import com.gakj.weilie.ui.common.StatusBadge
 import com.gakj.weilie.ui.common.fmtTs
 import com.gakj.weilie.ui.team.QrCodeImage
 import com.gakj.weilie.ui.theme.GlowButton
+import com.gakj.weilie.ui.theme.Hairline.hairline
+import com.gakj.weilie.ui.theme.Motion
+import com.gakj.weilie.ui.theme.Radius
+import com.gakj.weilie.ui.theme.Space
 import com.gakj.weilie.ui.theme.WColors
-import com.gakj.weilie.core.verify.RemotePhoto
-import com.gakj.weilie.ui.theme.glass
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -97,6 +102,8 @@ fun PhotoDetailSheet(
     // 跨设备：本机没有照片原件时按验真码向服务器查登记信息
     var remote by remember(photoId, remoteCode) { mutableStateOf<RemotePhoto?>(null) }
     var remoteError by remember(photoId, remoteCode) { mutableStateOf("") }
+    var remotePhoto by remember(photoId, remoteCode) { mutableStateOf<Bitmap?>(null) }
+    var remotePhotoLoading by remember(photoId, remoteCode) { mutableStateOf(false) }
 
     LaunchedEffect(photoId) {
         val loaded = withContext(Dispatchers.IO) {
@@ -119,6 +126,11 @@ fun PhotoDetailSheet(
             val info = runCatching { AppGraph.photoVerifier.lookup(remoteCode) }.getOrNull()
             remote = info
             if (info == null) remoteError = "查不到该验证码的登记信息（可能离线或已过期）"
+            // 服务端有原图就拉下来显示（拍照设备上传过才有；没有就只展示登记信息）
+            remotePhotoLoading = true
+            val bytes = runCatching { AppGraph.photoVerifier.fetchRemoteImage(remoteCode) }.getOrNull()
+            remotePhoto = bytes?.let { withContext(Dispatchers.IO) { runCatching { decodePhotoBytes(it, 1440) }.getOrNull() } }
+            remotePhotoLoading = false
         }
         loading = false
     }
@@ -134,8 +146,8 @@ fun PhotoDetailSheet(
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
                 .navigationBarsPadding()
-                .padding(horizontal = 18.dp)
-                .padding(bottom = 8.dp),
+                .padding(horizontal = Space.screenH)
+                .padding(bottom = Space.x2),
         ) {
             when {
                 loading -> Box(
@@ -150,6 +162,8 @@ fun PhotoDetailSheet(
                     code = remoteCode,
                     remote = remote,
                     error = remoteError,
+                    photo = remotePhoto,
+                    photoLoading = remotePhotoLoading,
                     onDelete = onDelete,
                     onClose = onClose,
                 )
@@ -169,7 +183,7 @@ fun PhotoDetailSheet(
                     }
                 }
             }
-            Spacer(Modifier.height(18.dp))
+            Spacer(Modifier.height(Space.x5))
         }
     }
 }
@@ -185,34 +199,32 @@ private fun DetailContent(
 ) {
     Text(
         text = record.title,
-        style = MaterialTheme.typography.titleLarge,
+        style = MaterialTheme.typography.titleMedium,
         color = WColors.OnBg,
     )
-    Spacer(Modifier.height(4.dp))
-    Text(
-        text = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA).format(Date(record.ts)),
-        style = MaterialTheme.typography.bodySmall,
-        color = WColors.OnBgDim,
-    )
     if (record.deviceType.isNotBlank()) {
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(Space.x2))
         StatusBadge(text = deviceTypeLabel(record.deviceType), color = WColors.Warning)
     }
 
-    Spacer(Modifier.height(14.dp))
+    Spacer(Modifier.height(Space.x3))
+    KeyValueRow(
+        key = "拍摄时间",
+        value = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA).format(Date(record.ts)),
+    )
     KeyValueRow(key = "坐标", value = String.format(Locale.US, "%.6f, %.6f", record.lat, record.lon))
     KeyValueRow(
         key = "定位精度",
         value = String.format(Locale.US, "±%.1f m", record.accuracyM.toDouble()),
     )
 
-    Spacer(Modifier.height(14.dp))
-    val shape = RoundedCornerShape(16.dp)
+    Spacer(Modifier.height(Space.x3))
     Box(
         Modifier
             .fillMaxWidth()
-            .glass(shape)
-            .padding(6.dp),
+            .clip(Radius.lgShape)
+            .background(WColors.ChipBg)
+            .hairline(Radius.lgShape),
         contentAlignment = Alignment.Center,
     ) {
         if (photo != null) {
@@ -223,7 +235,7 @@ private fun DetailContent(
                 modifier = Modifier
                     .fillMaxWidth()
                     .aspectRatio(photo.width.toFloat() / photo.height.toFloat())
-                    .clip(RoundedCornerShape(12.dp)),
+                    .clip(Radius.lgShape),
             )
         } else {
             Column(
@@ -239,7 +251,7 @@ private fun DetailContent(
                     tint = WColors.OnBgDim,
                     modifier = Modifier.size(34.dp),
                 )
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(Space.x2))
                 Text(
                     text = if (missing) "图片已丢失" else "正在加载…",
                     style = MaterialTheme.typography.bodyMedium,
@@ -250,18 +262,20 @@ private fun DetailContent(
     }
 
     if (record.lines.isNotEmpty()) {
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(Space.x3))
         Text(
             text = "现场水印",
             style = MaterialTheme.typography.labelSmall,
             color = WColors.OnBgDim,
         )
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(Space.x1))
         Column(
             Modifier
                 .fillMaxWidth()
-                .glass(RoundedCornerShape(12.dp))
-                .padding(12.dp),
+                .clip(Radius.mdShape)
+                .background(WColors.ChipBg)
+                .hairline(Radius.mdShape)
+                .padding(Space.x3),
         ) {
             record.lines.forEach { line ->
                 Text(
@@ -279,14 +293,14 @@ private fun DetailContent(
     VerifySection(record = record)
 
     if (onDelete != null) {
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(Space.x4))
         DeleteMarkerButton(
             hint = "照片文件会保留在本机，仅从地图上移除这个标点",
             onConfirm = onDelete,
         )
     }
 
-    Spacer(Modifier.height(18.dp))
+    Spacer(Modifier.height(Space.x5))
     GlowButton(
         text = "关闭",
         modifier = Modifier.fillMaxWidth(),
@@ -303,20 +317,8 @@ private fun DetailContent(
 @Composable
 private fun DeleteMarkerButton(hint: String, onConfirm: () -> Unit) {
     var confirming by remember { mutableStateOf(false) }
-    Button(
-        onClick = { confirming = true },
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = WColors.Danger.copy(alpha = 0.16f),
-            contentColor = WColors.Danger,
-        ),
-    ) {
-        Icon(Icons.Rounded.DeleteOutline, contentDescription = null, modifier = Modifier.size(18.dp))
-        Spacer(Modifier.width(8.dp))
-        Text("从地图移除该标点", fontWeight = FontWeight.SemiBold)
-    }
-    Spacer(Modifier.height(6.dp))
+    DangerOutlineButton(text = "从地图移除该标点", onClick = { confirming = true })
+    Spacer(Modifier.height(Space.x1))
     Text(hint, fontSize = 11.sp, color = WColors.OnBgDim)
 
     if (confirming) {
@@ -337,6 +339,34 @@ private fun DeleteMarkerButton(hint: String, onConfirm: () -> Unit) {
                 TextButton(onClick = { confirming = false }) { Text("取消", color = WColors.OnBgDim) }
             },
         )
+    }
+}
+
+/** 危险语义的次级按钮：红色 1dp 描边胶囊，与 OutlineButton 同构，但保留红色语义 */
+@Composable
+private fun DangerOutlineButton(text: String, onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(if (pressed) 0.965f else 1f, Motion.bouncy(), label = "dangerPress")
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .scale(scale)
+            .clip(Radius.pillShape)
+            .border(1.dp, WColors.Danger.copy(alpha = 0.7f), Radius.pillShape)
+            .clickable(interactionSource = interaction, indication = null) { onClick() }
+            .padding(horizontal = Space.x5, vertical = Space.x3),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = Icons.Rounded.DeleteOutline,
+            contentDescription = null,
+            tint = WColors.Danger,
+            modifier = Modifier.size(18.dp),
+        )
+        Spacer(Modifier.width(Space.x2))
+        Text(text, style = MaterialTheme.typography.labelLarge, color = WColors.Danger)
     }
 }
 
@@ -371,19 +401,21 @@ private fun VerifySection(record: PhotoRecord) {
         }
     }
 
-    Spacer(Modifier.height(16.dp))
+    Spacer(Modifier.height(Space.x3))
     Text(
         text = "验证真伪",
         style = MaterialTheme.typography.labelSmall,
         color = WColors.OnBgDim,
     )
-    Spacer(Modifier.height(6.dp))
+    Spacer(Modifier.height(Space.x1))
 
     Column(
         Modifier
             .fillMaxWidth()
-            .glass(RoundedCornerShape(12.dp))
-            .padding(12.dp),
+            .clip(Radius.mdShape)
+            .background(WColors.ChipBg)
+            .hairline(Radius.mdShape)
+            .padding(Space.x3),
     ) {
         val current = entry
         val res = result
@@ -395,7 +427,7 @@ private fun VerifySection(record: PhotoRecord) {
                         style = MaterialTheme.typography.labelSmall,
                         color = WColors.OnBgDim,
                     )
-                    Spacer(Modifier.height(2.dp))
+                    Spacer(Modifier.height(Space.x1))
                     Text(
                         text = current.code,
                         color = WColors.Primary,
@@ -403,14 +435,14 @@ private fun VerifySection(record: PhotoRecord) {
                         letterSpacing = 2.sp,
                         fontFamily = FontFamily.Monospace,
                     )
-                    Spacer(Modifier.height(4.dp))
+                    Spacer(Modifier.height(Space.x1))
                     Text(
                         text = "用任意手机扫码即可打开验真网页，第三方无需装 App 也能复核",
                         style = MaterialTheme.typography.labelSmall,
                         color = WColors.OnBgDim,
                     )
                 }
-                Spacer(Modifier.width(10.dp))
+                Spacer(Modifier.width(Space.x2))
                 // 二维码直接编码验真网页地址：别家手机的原生相机扫开就能验，不依赖本 App
                 QrCodeImage(text = AppGraph.serverHttpUrl() + "/v/" + current.code, size = 120)
             }
@@ -422,7 +454,7 @@ private fun VerifySection(record: PhotoRecord) {
                     tint = WColors.OnBgDim,
                     modifier = Modifier.size(18.dp),
                 )
-                Spacer(Modifier.width(8.dp))
+                Spacer(Modifier.width(Space.x2))
                 Text(
                     text = "未在服务器登记（可能离线拍摄）",
                     style = MaterialTheme.typography.bodySmall,
@@ -431,7 +463,7 @@ private fun VerifySection(record: PhotoRecord) {
             }
         }
 
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(Space.x2))
         VerifyRow(
             label = "登记记录",
             state = when {
@@ -479,7 +511,7 @@ private fun VerifySection(record: PhotoRecord) {
         )
 
         if (res?.error != null) {
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(Space.x1))
             Text(
                 text = res.error,
                 style = MaterialTheme.typography.labelSmall,
@@ -487,7 +519,7 @@ private fun VerifySection(record: PhotoRecord) {
             )
         }
 
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(Space.x2))
         Row(verticalAlignment = Alignment.CenterVertically) {
             GlowButton(
                 text = when {
@@ -526,7 +558,7 @@ private fun VerifySection(record: PhotoRecord) {
                 }
             }
             if (busy) {
-                Spacer(Modifier.width(12.dp))
+                Spacer(Modifier.width(Space.x3))
                 CircularProgressIndicator(
                     modifier = Modifier.size(18.dp),
                     strokeWidth = 2.dp,
@@ -537,40 +569,38 @@ private fun VerifySection(record: PhotoRecord) {
     }
 }
 
-/** 校验结果行：绿勾 / 红叉 / 灰问号 + 说明文字 */
+/** 校验结果行：标签 + 状态徽章（有效 Success / 无效 Danger / 未验证灰）+ 底部说明 */
 @Composable
 private fun VerifyRow(label: String, state: Boolean?, value: String) {
+    val badgeText = when (state) {
+        true -> "有效"
+        false -> "无效"
+        null -> "未验证"
+    }
     val color = when (state) {
         true -> WColors.Success
         false -> WColors.Danger
         null -> WColors.OnBgDim
     }
-    val icon = when (state) {
-        true -> Icons.Rounded.CheckCircle
-        false -> Icons.Rounded.Cancel
-        null -> Icons.Rounded.RemoveCircleOutline
-    }
-    Row(
+    Column(
         Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(vertical = Space.x1),
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = color,
-            modifier = Modifier.size(16.dp),
-        )
-        Spacer(Modifier.width(8.dp))
-        Text(label, style = MaterialTheme.typography.bodyMedium, color = WColors.OnBgDim)
-        Spacer(Modifier.width(10.dp))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyMedium,
+                color = WColors.OnBgDim,
+                modifier = Modifier.weight(1f),
+            )
+            StatusBadge(text = badgeText, color = color)
+        }
+        Spacer(Modifier.height(Space.x1))
         Text(
             text = value,
             style = MaterialTheme.typography.bodySmall,
             color = color,
-            textAlign = TextAlign.End,
-            modifier = Modifier.weight(1f),
         )
     }
 }
@@ -581,28 +611,14 @@ private fun NotFoundContent(onClose: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 18.dp),
+            .padding(vertical = Space.x4),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Icon(
-            imageVector = Icons.Rounded.PhotoLibrary,
-            contentDescription = null,
-            tint = WColors.OnBgDim,
-            modifier = Modifier.size(38.dp),
+        EmptyState(
+            title = "未找到该标点的取证记录",
+            desc = "记录可能已被删除或来自其它设备",
+            icon = Icons.Rounded.PhotoLibrary,
         )
-        Spacer(Modifier.height(12.dp))
-        Text(
-            text = "未找到该标点的取证记录",
-            style = MaterialTheme.typography.titleMedium,
-            color = WColors.OnBg,
-        )
-        Spacer(Modifier.height(4.dp))
-        Text(
-            text = "记录可能已被删除或来自其它设备",
-            style = MaterialTheme.typography.bodySmall,
-            color = WColors.OnBgDim,
-        )
-        Spacer(Modifier.height(18.dp))
         GlowButton(
             text = "关闭",
             modifier = Modifier.fillMaxWidth(),
@@ -617,13 +633,15 @@ private fun RemoteContent(
     code: String,
     remote: RemotePhoto?,
     error: String,
+    photo: Bitmap?,
+    photoLoading: Boolean,
     onDelete: (() -> Unit)?,
     onClose: () -> Unit,
 ) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 12.dp),
+            .padding(vertical = Space.x3),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
@@ -632,7 +650,7 @@ private fun RemoteContent(
                 tint = WColors.Primary,
                 modifier = Modifier.size(26.dp),
             )
-            Spacer(Modifier.width(10.dp))
+            Spacer(Modifier.width(Space.x2))
             Column {
                 Text(
                     text = "远程取证记录",
@@ -640,13 +658,24 @@ private fun RemoteContent(
                     color = WColors.OnBg,
                 )
                 Text(
-                    text = "照片原件在拍摄设备上，本机只核验登记信息",
+                    text = if (photo != null) "照片由拍摄设备上传，下方为服务器登记信息" else if (photoLoading) "正在从服务器加载照片…" else "拍摄设备未上传原图，本机只展示登记信息",
                     style = MaterialTheme.typography.bodySmall,
                     color = WColors.OnBgDim,
                 )
             }
         }
-        Spacer(Modifier.height(14.dp))
+        Spacer(Modifier.height(Space.x3))
+        if (photo != null) {
+            Image(
+                bitmap = photo.asImageBitmap(),
+                contentDescription = "远程取证照片",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(Radius.mdShape),
+            )
+            Spacer(Modifier.height(Space.x3))
+        }
         KeyValueRow(key = "验证码", value = code)
         if (remote != null) {
             KeyValueRow(key = "登记时间", value = fmtTime(remote.serverTs))
@@ -660,32 +689,32 @@ private fun RemoteContent(
             }
             if (remote.note.isNotBlank()) KeyValueRow(key = "备注", value = remote.note)
             KeyValueRow(key = "照片哈希", value = remote.hashShort)
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(Space.x2))
             StatusBadge(
                 text = if (remote.sigValid) "服务器签名有效" else "服务器签名无效",
                 color = if (remote.sigValid) WColors.Success else WColors.Danger,
             )
         } else {
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(Space.x2))
             Text(
                 text = error.ifBlank { "正在查询登记信息…" },
                 style = MaterialTheme.typography.bodyMedium,
                 color = WColors.OnBgDim,
             )
         }
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(Space.x3))
         Text(
             text = "队友在拍摄设备上可以打开原图；本机也可把这个验证码输入网页验真页查看记录。",
             style = MaterialTheme.typography.bodySmall,
             color = WColors.OnBgDim,
         )
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(Space.x4))
         if (onDelete != null) {
             DeleteMarkerButton(
                 hint = "队友手机上的照片会保留，仅从地图与房间里移除这个标点",
                 onConfirm = onDelete,
             )
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(Space.x3))
         }
         GlowButton(
             text = "关闭",
@@ -705,6 +734,17 @@ private fun deviceTypeLabel(raw: String): String = when (raw) {
     "SUSPICIOUS_DEVICE" -> "可疑设备"
     "OTHER" -> "其他"
     else -> raw
+}
+
+/** 远程图片（字节）按边长下采样解码 */
+private fun decodePhotoBytes(bytes: ByteArray, maxSide: Int): Bitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+    var sample = 1
+    while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= maxSide) sample *= 2
+    val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+    return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
 }
 
 /** 详情大图按屏幕尺寸下采样加载，避免整张 1600px 原图占内存 */

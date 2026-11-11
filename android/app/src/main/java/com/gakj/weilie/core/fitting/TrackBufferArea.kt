@@ -13,7 +13,7 @@ import kotlin.math.sqrt
  * **我走到哪儿，就以那儿为圆心画一个圆（或方块），把圆连起来就是「我实测到的区域」**，
  * 这个圆/方块多大由人自己定，和信号强弱无关，纯看「走到过」。
  *
- * 实现：把轨迹点按 [Options.radiusM] 在网格上做距离场（圆=欧氏距离，方=切比雪夫距离），
+ * 实现：把轨迹（点及相邻点连线）按 [Options.radiusM] 在网格上做距离场（圆=欧氏距离，方=切比雪夫距离），
  * 再用 Marching Squares 取零等值线得到**多个圆/方块的并集外轮廓**——
  * 这样重叠处不会因为半透明叠加出现深浅不一，也不会有很多条边。
  *
@@ -63,25 +63,33 @@ object TrackBufferArea {
         val cols = ((spanX / step).toInt() + 2).coerceAtLeast(3)
         val rows = ((spanY / step).toInt() + 2).coerceAtLeast(3)
 
-        // 距离场：值 = radius - 到最近轨迹点的距离，>0 即在缓冲区内
+        // 距离场：值 = radius - 到最近「轨迹线段」的距离，>0 即在缓冲区内。
+        // 用线段而不是孤立点，相邻点之间的走廊也会被铺满，两个点即使间距大于直径也不会断成两块
+        // （真机反馈：只画出了其中一块圆，看起来像漏测）。
         val values = DoubleArray(cols * rows) { -1e6 }
         val reach = ((radius * 1.2) / step).toInt() + 2
-        for (p in pts) {
-            val c0 = ((p.x - minX) / step).toInt()
-            val r0 = ((p.y - minY) / step).toInt()
-            for (r in (r0 - reach).coerceAtLeast(0)..(r0 + reach).coerceAtMost(rows - 1)) {
+        val segs = if (pts.size == 1) {
+            listOf(pts[0] to pts[0])
+        } else {
+            pts.zipWithNext { a, b -> a to b }.filter { (a, b) -> dist(a, b) >= 1.0 }
+                .ifEmpty { listOf(pts.first() to pts.first()) }
+        }
+        for ((a, b) in segs) {
+            val reachM = radius * 1.2
+            val c0 = (((minOf(a.x, b.x) - reachM) - minX) / step).toInt().coerceIn(0, cols - 1)
+            val c1 = (((maxOf(a.x, b.x) + reachM) - minX) / step).toInt().coerceIn(0, cols - 1)
+            val r0 = (((minOf(a.y, b.y) - reachM) - minY) / step).toInt().coerceIn(0, rows - 1)
+            val r1 = (((maxOf(a.y, b.y) + reachM) - minY) / step).toInt().coerceIn(0, rows - 1)
+            for (r in r0..r1) {
                 val y = minY + r * step
-                for (c in (c0 - reach).coerceAtLeast(0)..(c0 + reach).coerceAtMost(cols - 1)) {
+                for (c in c0..c1) {
                     val x = minX + c * step
-                    val dx = abs(x - p.x)
-                    val dy = abs(y - p.y)
-                    val d = when (opt.shape) {
-                        Shape.CIRCLE -> sqrt(dx * dx + dy * dy)
-                        Shape.SQUARE -> max(dx, dy)
-                    }
+                    val d = distanceToSegment(x, y, a, b, opt.shape)
                     val v = radius - d
-                    val i = r * cols + c
-                    if (v > values[i]) values[i] = v
+                    if (v > 0.0) {
+                        val i = r * cols + c
+                        if (v > values[i]) values[i] = v
+                    }
                 }
             }
         }
@@ -108,6 +116,22 @@ object TrackBufferArea {
             areaM2 = abs(shoelace(ring)),
             pointCount = sane.size,
         )
+    }
+
+    /** 网格点 (x,y) 到一个线段的距离；CIRCLE 用欧氏距离，SQUARE 用切比雪夫距离（方块语义） */
+    private fun distanceToSegment(x: Double, y: Double, a: Pt, b: Pt, shape: Shape): Double {
+        val vx = b.x - a.x
+        val vy = b.y - a.y
+        val len2 = vx * vx + vy * vy
+        val t = if (len2 <= 1e-9) 0.0 else (((x - a.x) * vx + (y - a.y) * vy) / len2).coerceIn(0.0, 1.0)
+        val nx = a.x + vx * t
+        val ny = a.y + vy * t
+        val dx = abs(x - nx)
+        val dy = abs(y - ny)
+        return when (shape) {
+            Shape.CIRCLE -> sqrt(dx * dx + dy * dy)
+            Shape.SQUARE -> max(dx, dy)
+        }
     }
 
     private fun dist(a: Pt, b: Pt): Double = sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y))

@@ -51,6 +51,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import com.gakj.weilie.core.telephony.ShizukuCells
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import rikka.shizuku.Shizuku
+import java.text.SimpleDateFormat
+import java.util.Date
 import com.gakj.weilie.ui.AppGraph
 import com.gakj.weilie.ui.Route
 import com.gakj.weilie.ui.common.GlassTextButton
@@ -79,8 +87,8 @@ private data class AccentPreset(val name: String, val argb: Int)
 private val ACCENT_PRESETS = listOf(
     AccentPreset("冷青", 0xFF22D3EE.toInt()),
     AccentPreset("海蓝", 0xFF3B82F6.toInt()),
-    AccentPreset("靛紫", 0xFF8B5CF6.toInt()),
-    AccentPreset("品红", 0xFFD946EF.toInt()),
+    AccentPreset("湖蓝", 0xFF0EA5E9.toInt()),
+    AccentPreset("松绿", 0xFF059669.toInt()),
     AccentPreset("玫红", 0xFFF43F5E.toInt()),
     AccentPreset("橙金", 0xFFF59E0B.toInt()),
     AccentPreset("玉绿", 0xFF10B981.toInt()),
@@ -131,6 +139,34 @@ fun SettingsScreen(onBack: () -> Unit) {
         permTick++
         toast(ctx, if (granted) "已授权" else "未授权，可到系统设置中手动开启")
     }
+    // Shizuku 邻区增强：授权后以 shell 身份读系统全量小区（补系统不给的邻区）
+    var shizukuTick by remember { mutableIntStateOf(0) }
+    val shizukuInstalled = remember { ShizukuCells.isInstalled(ctx) }
+    val shizukuAlive = remember(shizukuTick) { ShizukuCells.isBinderAlive() }
+    val shizukuGranted = remember(shizukuTick) { ShizukuCells.isAuthorized() }
+    // 诊断：进页面（或点「刷新状态」）时真读一次，证明 binder 真的能拿到小区
+    var shizukuDiag by remember { mutableStateOf<ShizukuCells.LastRead?>(null) }
+    LaunchedEffect(shizukuGranted, shizukuTick) {
+        if (shizukuGranted) {
+            shizukuDiag = withContext(Dispatchers.IO) {
+                ShizukuCells.readRegistry()
+                ShizukuCells.lastRead
+            }
+        }
+    }
+    val shizukuListener = remember {
+        Shizuku.OnRequestPermissionResultListener { code, result ->
+            if (code == ShizukuCells.REQUEST_CODE) {
+                shizukuTick++
+                val ok = result == android.content.pm.PackageManager.PERMISSION_GRANTED
+                toast(ctx, if (ok) "Shizuku 已授权：邻区将读取系统全量列表" else "Shizuku 授权被拒绝，可稍后重试")
+            }
+        }
+    }
+    DisposableEffect(Unit) {
+        ShizukuCells.addResultListener(shizukuListener)
+        onDispose { ShizukuCells.removeResultListener(shizukuListener) }
+    }
     val locOk = remember(permTick) { hasLocationPermission(ctx) }
     val notifOk = remember(permTick) { hasNotificationPermission(ctx) }
     val phoneOk = remember(permTick) { hasPerm(ctx, Manifest.permission.READ_PHONE_STATE) }
@@ -168,7 +204,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                 GateSliderRow(
                     title = "防抖距离门槛",
                     valueText = "${distGate.roundToInt()} m",
-                    hint = "距上个成功点小于该值时合并为一点（默认 3 m）",
+                    hint = "距上个成功点小于该值时合并为一点（默认 1 m）",
                     value = distGate,
                     range = 1f..10f,
                 ) { v ->
@@ -205,6 +241,108 @@ fun SettingsScreen(onBack: () -> Unit) {
                         fmtInterval(intervalMs),
                         style = MonoText.style,
                         color = WColors.Primary,
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(16.dp))
+
+        // ---------- 邻区增强（Shizuku） ----------
+        SectionHeader("邻区增强（Shizuku）", modifier = Modifier.padding(horizontal = 20.dp))
+        GlassCard(Modifier.padding(horizontal = 20.dp)) {
+            Column {
+                Text(
+                    "系统对普通应用只返回驻留小区，邻区常被隐藏。授权 Shizuku 后，围猎会以 shell 身份读取系统全量小区列表，补全邻区并启用「邻区命中」判定。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = WColors.OnBgDim,
+                )
+                Spacer(Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    StatusBadge(
+                        text = when {
+                            !shizukuInstalled -> "未安装"
+                            !shizukuAlive -> "服务未运行"
+                            shizukuGranted -> "已授权"
+                            else -> "未授权"
+                        },
+                        color = when {
+                            shizukuGranted -> WColors.Success
+                            shizukuInstalled -> WColors.Warning
+                            else -> WColors.OnBgDim
+                        },
+                    )
+                    Spacer(Modifier.weight(1f))
+                    GlassTextButton(
+                        text = when {
+                            !shizukuInstalled -> "去安装"
+                            !shizukuAlive -> "打开 Shizuku"
+                            shizukuGranted -> "刷新状态"
+                            else -> "申请授权"
+                        },
+                    ) {
+                        when {
+                            !shizukuInstalled -> toast(ctx, "未检测到 Shizuku，请先安装 Shizuku 并启动服务")
+                            !shizukuAlive -> {
+                                if (!ShizukuCells.openShizukuApp(ctx)) toast(ctx, "请先打开 Shizuku 并启动服务")
+                            }
+                            shizukuGranted -> {
+                                shizukuTick++
+                                toast(ctx, "Shizuku 已授权")
+                            }
+                            else -> if (!ShizukuCells.requestPermission()) {
+                                toast(ctx, "授权请求发送失败，请确认 Shizuku 正在运行")
+                            }
+                        }
+                    }
+                }
+                if (shizukuInstalled && shizukuAlive) {
+                    Spacer(Modifier.height(6.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "Shizuku 服务 v${ShizukuCells.versionCode()} · uid ${ShizukuCells.serviceUid()}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = WColors.OnBgDim,
+                        )
+                        Spacer(Modifier.weight(1f))
+                        GlassTextButton("重新申请授权") {
+                            if (!ShizukuCells.requestPermission()) {
+                                toast(ctx, "授权请求发送失败，请确认 Shizuku 正在运行")
+                            } else {
+                                toast(ctx, "已向 Shizuku 重新申请，请在弹窗里点允许")
+                            }
+                        }
+                    }
+                }
+                if (shizukuGranted) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "每 2 秒刷新一次；未授权时自动回退系统 API，不影响主区采集。部分 ROM 限制应用列表权限，Shizuku 管理器里不显示围猎属正常，以本页状态和下方读取结果为准。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = WColors.OnBgDim,
+                    )
+                    // 诊断行：证明 binder 真的读到了东西（Shizuku 的「应用管理」列表为空也可能能读）
+                    val diag = shizukuDiag
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = if (diag == null) {
+                            "最近读取：等待中…（每 2 秒一次）"
+                        } else {
+                            val time = SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
+                                .format(Date(diag.atEpochMs))
+                            buildString {
+                                append("最近读取 $time：")
+                                append(diag.cellCount)
+                                append(" 条小区 · 邻区 ")
+                                append(diag.neighborCount)
+                                append(" 条")
+                                if (diag.error != null) {
+                                    append(" · ")
+                                    append(diag.error)
+                                }
+                            }
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (diag?.error != null) WColors.Warning else WColors.OnBgDim,
                     )
                 }
             }

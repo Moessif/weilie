@@ -18,7 +18,14 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- 多人语音对讲：按住说话才录音，松开即停 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!-- Android 11+ 包可见性：不声明的话 getPackageInfo 查不到 Shizuku，设置页会误报「未安装」 -->
+    <queries>
+        <package android:name="moe.shizuku.privileged.api" />
+    </queries>
 
     <uses-feature android:name="android.hardware.location.gps" android:required="false" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
@@ -59,6 +66,15 @@
                 android:name="android:PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="按主区/邻区命中状态提供震动提示的静默跟踪" />
         </service>
+
+        <!-- Shizuku：授权后以 shell 身份执行 dumpsys，补全系统不返回的邻区列表 -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
         <!-- 拍照标记：FileProvider 共享临时文件 -->
         <provider

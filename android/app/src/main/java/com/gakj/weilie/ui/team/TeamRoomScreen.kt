@@ -1,6 +1,7 @@
 package com.gakj.weilie.ui.team
 
 import android.Manifest
+import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -32,6 +33,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Adjust
 import androidx.compose.material.icons.rounded.Assignment
 import androidx.compose.material.icons.rounded.Flag
+import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.Layers
@@ -65,11 +67,19 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.core.content.ContextCompat
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gakj.weilie.core.cellmap.CellLibraryClient
@@ -81,6 +91,7 @@ import com.gakj.weilie.core.fitting.Geo
 import com.gakj.weilie.core.fitting.ConvexHull
 import com.gakj.weilie.core.sync.ConnState
 import com.gakj.weilie.core.sync.MemberView
+import com.gakj.weilie.core.audio.VoiceTalk
 import com.gakj.weilie.core.sync.RoomClient
 import com.gakj.weilie.core.sync.WsMsg
 import com.gakj.weilie.service.SamplingForegroundService
@@ -102,6 +113,9 @@ import com.gakj.weilie.ui.map.HeatOverlayBuilder
 import com.gakj.weilie.ui.map.MapLayersPanel
 import com.gakj.weilie.ui.map.MapLayerMode
 import com.gakj.weilie.ui.theme.GlassCard
+import com.gakj.weilie.ui.theme.Hairline.hairline
+import com.gakj.weilie.ui.theme.Radius
+import com.gakj.weilie.ui.theme.Space
 import com.gakj.weilie.ui.theme.MonoText
 import com.gakj.weilie.ui.theme.PulsingDot
 import com.gakj.weilie.ui.theme.WColors
@@ -184,6 +198,8 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
     var markerMenu by remember { mutableStateOf(false) }
     var framed by remember { mutableStateOf(false) }
     var showLayers by remember { mutableStateOf(false) }
+    // 顶栏+成员条的实际高度：图层浮层据此下移，避免盖住房间信息与队员列表
+    var topChromePx by remember { mutableIntStateOf(0) }
     var layerMode by remember { mutableStateOf(MapLayerMode.NORMAL) }
     var teammateVisible by remember { mutableStateOf(true) }
     var zoneVisible by remember { mutableStateOf(true) }
@@ -194,6 +210,21 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
     var transferTarget by remember { mutableStateOf<MemberView?>(null) }
     val localZones = remember { mutableStateListOf<WsMsg.Zone>() }
     var showCamera by remember { mutableStateOf(false) }
+
+    // ---------- 语音对讲（按住说话，松开发送）----------
+    val voice = remember { VoiceTalk() }
+    var talking by remember { mutableStateOf(false) }
+    var speaker by remember { mutableStateOf("") }
+    var recordGranted by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED,
+        )
+    }
+    val recordPermLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        recordGranted = granted
+        toast(ctx, if (granted) "麦克风已授权，按住「对讲」说话" else "没有麦克风权限，无法对讲")
+    }
     var detailPhotoId by remember { mutableStateOf<String?>(null) }
     // 跨设备查看：本机没有照片原件时，用验真码向服务器查登记信息
     var detailPhotoCode by remember { mutableStateOf("") }
@@ -329,6 +360,24 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
 
     // QA-05：服务器 State 是权威快照——一到就丢弃本地乐观任务区，
     // 否则队长重划/换圈时旧批次会永久堆在列表与地图上（队友端只收到最新一批）
+    // 语音：挂接房间回调（不放进 StateFlow，避免每帧触发重组）
+    LaunchedEffect(room) {
+        room.onAudioStart = { speaker = it.byName.ifBlank { it.userId } }
+        room.onAudioChunk = { voice.play(it.data) }
+        room.onAudioStop = {
+            speaker = ""
+            voice.stopPlayback()
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            room.onAudioStart = null
+            room.onAudioChunk = null
+            room.onAudioStop = null
+            voice.release()
+        }
+    }
+
     LaunchedEffect(state.zones) {
         if (state.zones.isNotEmpty()) localZones.clear()
     }
@@ -489,8 +538,12 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
         if (showLayers) {
             Box(
                 Modifier
+                    .zIndex(6f)
                     .statusBarsPadding()
-                    .padding(start = 62.dp, top = 10.dp),
+                    .padding(
+                        start = 62.dp,
+                        top = with(LocalDensity.current) { topChromePx.toDp() } + 8.dp,
+                    ),
             ) {
                 MapLayersPanel(
                     current = layerMode,
@@ -529,6 +582,9 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
                     onLibraryToggle = { libraryOn = it },
                     onLibrarySearch = { showCellSearch = true },
                     onDismiss = { showLayers = false },
+                    maxHeight = with(LocalDensity.current) {
+                        LocalConfiguration.current.screenHeightDp.dp - topChromePx.toDp() - 200.dp
+                    },
                 )
             }
         }
@@ -538,6 +594,7 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
             Modifier
                 .fillMaxWidth()
                 .statusBarsPadding()
+                .onGloballyPositioned { topChromePx = it.size.height }
                 .padding(start = 62.dp, end = 10.dp, top = 10.dp),
         ) {
             GlassCard(Modifier.fillMaxWidth(), onMap = true) {
@@ -561,6 +618,8 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
             }
         }
 
+        // 图层浮层打开时收起右侧按钮，避免浮层与按钮互相压住
+        if (!showLayers) {
         // ---------- 右侧上部悬浮钮：任务 / 团队聊天 / 定位 ----------
         Column(
             Modifier
@@ -610,6 +669,9 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
             }
         }
 
+        }
+
+        if (!showLayers) {
         // ---------- 左下聊天浮层 ----------
         Column(
             Modifier
@@ -621,9 +683,9 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
                 Box(
                     Modifier
                         // 跟随主题：暗色=深蓝玻璃，亮色=白玻璃；文字统一用 OnBg，两种主题都可读
-                        .background(WColors.Bg1.copy(alpha = 0.92f), RoundedCornerShape(12.dp))
-                        .border(1.dp, WColors.GlassBorder, RoundedCornerShape(12.dp))
-                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                        .background(WColors.ChipBg, Radius.smShape)
+                        .border(1.dp, WColors.ChipBorder, Radius.smShape)
+                        .padding(horizontal = Space.x2, vertical = Space.x1),
                 ) {
                     Text(
                         "${c.fromName}：${c.text}",
@@ -636,6 +698,9 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
             }
         }
 
+        }
+
+        if (!showLayers) {
         // ---------- 底部：标记 / 观战提示 ----------
         if (myRole != "OBSERVER") {
             Box(
@@ -679,6 +744,54 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
                         placeMode = "PHOTO"
                         toast(ctx, "点击地图选择取证位置")
                     }
+                    Spacer(Modifier.width(14.dp))
+                    // 按住说话：按下即录音并广播 audioStart，松开发 audioStop
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Box(
+                        Modifier
+                            .size(44.dp)
+                            .clip(CircleShape)
+                            .background(if (talking) WColors.Danger else WColors.MapGlassTop, CircleShape)
+                            .border(1.dp, if (talking) WColors.Danger else WColors.ChipBorder, CircleShape)
+                            .pointerInput(recordGranted) {
+                                detectTapGestures(
+                                    onPress = {
+                                        if (!recordGranted) {
+                                            recordPermLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                        } else {
+                                            val started = voice.startRecording(scope) { seq, data ->
+                                                room.audioChunk(userId, seq, data)
+                                            }
+                                            if (!started) {
+                                                toast(ctx, "无法启动麦克风，请检查是否被其他应用占用")
+                                            } else {
+                                                talking = true
+                                                scope.launch { room.audioStart(userId, name) }
+                                                tryAwaitRelease()
+                                                talking = false
+                                                voice.stopRecording()
+                                                scope.launch { room.audioStop(userId) }
+                                            }
+                                        }
+                                    },
+                                )
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Mic,
+                            contentDescription = "对讲",
+                            tint = if (talking) WColors.OnPrimary else WColors.OnBg,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "对讲",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (talking) WColors.Danger else WColors.OnBgDim,
+                    )
+                    }
                 }
             }
         } else {
@@ -693,6 +806,31 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
             )
         }
 
+        }
+
+        // ---------- 有人正在讲话：底部提示 ----------
+        if (speaker.isNotBlank()) {
+            Row(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(bottom = 84.dp)
+                    .clip(Radius.pillShape)
+                    .background(WColors.Bg1.copy(alpha = 0.94f), Radius.pillShape)
+                    .hairline(Radius.pillShape)
+                    .padding(horizontal = Space.x3, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                PulsingDot(color = WColors.Success, size = 8.dp)
+                Spacer(Modifier.width(Space.x2))
+                Text(
+                    text = "$speaker 正在讲话",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = WColors.OnBg,
+                )
+            }
+        }
+
         // ---------- 点选位置提示条（需求 4：标点/拍照点地图选位置）----------
         placeMode?.let { mode ->
             Row(
@@ -700,12 +838,14 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
                     .align(Alignment.TopCenter)
                     .statusBarsPadding()
                     .padding(top = 92.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    // 跟随主题：浅色主题下原来是深底 + 近黑字（不可读），改为白玻璃 + OnBg 文字
-                    .background(WColors.Bg1.copy(alpha = 0.94f), RoundedCornerShape(14.dp))
-                    .border(1.dp, WColors.GlassBorder, RoundedCornerShape(14.dp))
+                    .clip(Radius.mdShape)
+                    .background(
+                        Brush.verticalGradient(listOf(Color(0xFF0C1220), Color(0xFF090E18))),
+                        Radius.mdShape,
+                    )
+                    .hairline(Radius.mdShape)
                     .clickable { placeMode = null }
-                    .padding(horizontal = 14.dp, vertical = 9.dp),
+                    .padding(horizontal = Space.x3, vertical = Space.x2),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(Icons.Rounded.Place, contentDescription = null, tint = WColors.Primary, modifier = Modifier.size(15.dp))
@@ -733,11 +873,13 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
                     .navigationBarsPadding()
                     .padding(bottom = 78.dp)
                     .padding(horizontal = 16.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    // 同上：绘制操作条也要跟随主题，浅色主题不能再压深底
-                    .background(WColors.Bg1.copy(alpha = 0.94f), RoundedCornerShape(16.dp))
-                    .border(1.dp, WColors.GlassBorder, RoundedCornerShape(16.dp))
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                    .clip(Radius.lgShape)
+                    .background(
+                        Brush.verticalGradient(listOf(Color(0xFF0C1220), Color(0xFF090E18))),
+                        Radius.lgShape,
+                    )
+                    .hairline(Radius.lgShape)
+                    .padding(horizontal = Space.x3, vertical = Space.x2),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text(
@@ -1289,6 +1431,10 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
                             ?: AppGraph.verifyStore.byPhotoId(rec.id)?.code.orEmpty()
                     } else {
                         AppGraph.verifyStore.byPhotoId(rec.id)?.code.orEmpty()
+                    }
+                    // 把原图上传到服务器（按验证码存），队友点开标点就能看到照片
+                    if (code.isNotBlank() && file != null) {
+                        runCatching { AppGraph.photoVerifier.uploadFile(code, file) }
                     }
                     room.photo(
                         WsMsg.Marker(

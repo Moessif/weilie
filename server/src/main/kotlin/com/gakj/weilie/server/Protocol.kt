@@ -134,6 +134,33 @@ sealed class WsMsg {
 
     // ---------- 服务端 -> 客户端 ----------
 
+    // ---------- 语音对讲（客户端上行，服务端转发给同一房间的其他成员）----------
+
+    @Serializable
+    @SerialName("audioStart")
+    data class AudioStart(
+        val userId: String,
+        val byName: String = "",
+        val ts: Long = 0L,
+    ) : WsMsg()
+
+    @Serializable
+    @SerialName("audioChunk")
+    data class AudioChunk(
+        val userId: String,
+        val seq: Int = 0,
+        val data: String = "",
+        val ts: Long = 0L,
+    ) : WsMsg()
+
+    @Serializable
+    @SerialName("audioStop")
+    data class AudioStop(
+        val userId: String,
+        val ts: Long = 0L,
+    ) : WsMsg()
+
+    // ---------- 服务端 -> 客户端（state / chatEcho / photoAck / bye / pong）----------
     @Serializable
     @SerialName("state")
     data class State(

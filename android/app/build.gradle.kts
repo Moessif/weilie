@@ -13,8 +13,8 @@ android {
         applicationId = "com.gakj.weilie"
         minSdk = 26
         targetSdk = 35
-        versionCode = 25
-        versionName = "0.11.2"
+        versionCode = 32
+        versionName = "0.13.0"
         ndk {
             // 只保留真机主力 ABI（arm64）与模拟器 ABI（x86_64），APK 体积减半
             abiFilters += listOf("arm64-v8a", "x86_64")
@@ -71,5 +71,8 @@ dependencies {
     implementation(libs.camera.view)
     // 百度地图 SDK（本地 AAR：基础地图+检索+步骑行导航+离线定位+全景）
     implementation(mapOf("name" to "BaiduLBS_Android", "ext" to "aar"))
+    // Shizuku：以 shell 身份读取系统完整小区列表（邻区增强，无需 root；未安装/未授权时自动回退）
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
     testImplementation(libs.junit)
 }

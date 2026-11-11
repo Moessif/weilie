@@ -17,12 +17,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -40,8 +41,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gakj.weilie.core.sync.ConnState
@@ -57,18 +59,21 @@ import com.gakj.weilie.ui.theme.GlassCard
 import com.gakj.weilie.ui.theme.GlowButton
 import com.gakj.weilie.ui.theme.MonoText
 import com.gakj.weilie.ui.theme.PulsingDot
+import com.gakj.weilie.ui.theme.Radius
 import com.gakj.weilie.ui.theme.SectionHeader
+import com.gakj.weilie.ui.theme.Space
 import com.gakj.weilie.ui.theme.WColors
 import com.gakj.weilie.ui.theme.glass
 import kotlinx.coroutines.launch
 
 /**
  * 房间管理页（STRICT_SPEC §3）：队伍码+二维码出示、成员列表、
- * 聊天大厅+对讲开关（UI 预留）、进入任务地图按钮；观战只读。
+ * 聊天大厅、语音对讲说明、进入任务地图按钮；观战只读。
  */
 @Composable
 fun RoomScreen(roomId: String, onBack: () -> Unit, onEnterTask: () -> Unit) {
     val ctx = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     val userId = remember { AppGraph.userId() }
     val name = remember {
         (AppGraph.prefs.getString(Route.PREF_NICKNAME, "") ?: "").ifBlank { "队员${userId.take(4)}" }
@@ -117,7 +122,7 @@ fun RoomScreen(roomId: String, onBack: () -> Unit, onEnterTask: () -> Unit) {
     val chats by room.chats.collectAsState()
     val scope = rememberCoroutineScope()
     var input by remember { mutableStateOf("") }
-    var intercom by remember { mutableStateOf(false) }
+    var intercom by remember { mutableStateOf(true) }
 
     val (connText, connColor) = when (conn) {
         ConnState.CONNECTED -> "已连接" to WColors.Success
@@ -138,50 +143,62 @@ fun RoomScreen(roomId: String, onBack: () -> Unit, onEnterTask: () -> Unit) {
                 .verticalScroll(rememberScrollState()),
         ) {
             ScreenTopBar("房间管理", "队伍码 · 成员 · 聊天", onBack)
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(Space.x2))
 
             // ---------- 房间信息 + 二维码 ----------
-            SectionHeader("队伍码", modifier = Modifier.padding(horizontal = 20.dp))
-            GlassCard(Modifier.padding(horizontal = 20.dp)) {
+            SectionHeader("队伍码", modifier = Modifier.padding(horizontal = Space.screenH))
+            GlassCard(Modifier.padding(horizontal = Space.screenH)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Rounded.Groups, contentDescription = null, tint = WColors.Secondary, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
+                            Icon(Icons.Rounded.Groups, contentDescription = null, tint = WColors.Primary, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(Space.x2))
                             PulsingDot(if (conn == ConnState.CONNECTED) WColors.Success else WColors.Warning, 8.dp)
-                            Spacer(Modifier.width(4.dp))
+                            Spacer(Modifier.width(Space.x1))
                             Text(connText, style = MaterialTheme.typography.labelSmall, color = connColor)
                         }
-                        Spacer(Modifier.height(8.dp))
-                        Text(code, style = MonoText.style.copy(fontSize = 30.sp), color = WColors.Primary)
-                        Spacer(Modifier.height(8.dp))
+                        Spacer(Modifier.height(Space.x2))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(code, style = MonoText.style.copy(fontSize = 30.sp), color = WColors.Primary)
+                            IconButton(onClick = {
+                                clipboard.setText(AnnotatedString(code))
+                                toast(ctx, "队伍码已复制")
+                            }) {
+                                Icon(
+                                    Icons.Rounded.ContentCopy,
+                                    contentDescription = "复制队伍码",
+                                    tint = WColors.OnBgDim,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }
+                        }
                         Text(
-                            "队友可输入队伍码，或扫描右侧二维码加入本房间",
+                            "队友输入队伍码或扫码加入",
                             style = MaterialTheme.typography.labelSmall,
                             color = WColors.OnBgDim,
                         )
-                        Spacer(Modifier.height(6.dp))
+                        Spacer(Modifier.height(Space.x1))
                         Text(
                             "房间 ID：$roomId",
                             style = MonoText.style,
                             color = WColors.OnBgDim,
                         )
                     }
-                    Spacer(Modifier.width(12.dp))
+                    Spacer(Modifier.width(Space.x3))
                     QrCodeImage("WEILIE:$code", size = 116)
                 }
             }
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(Space.x4))
 
-            // ---------- 对讲开关（UI 预留） ----------
-            SectionHeader("语音对讲", modifier = Modifier.padding(horizontal = 20.dp))
-            GlassCard(Modifier.padding(horizontal = 20.dp)) {
+            // ---------- 语音对讲说明（实际捏在任务地图底部「对讲」按钮） ----------
+            SectionHeader("语音对讲", modifier = Modifier.padding(horizontal = Space.screenH))
+            GlassCard(Modifier.padding(horizontal = Space.screenH)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("实时对讲", style = MaterialTheme.typography.bodyMedium, color = WColors.OnBg)
                         Spacer(Modifier.height(2.dp))
                         Text(
-                            "队伍语音通道（音频链路将在后续版本接入）",
+                            "进入任务地图后，按住底部「对讲」按钮说话；松开即发送（半双工）",
                             style = MaterialTheme.typography.labelSmall,
                             color = WColors.OnBgDim,
                         )
@@ -190,7 +207,7 @@ fun RoomScreen(roomId: String, onBack: () -> Unit, onEnterTask: () -> Unit) {
                         checked = intercom,
                         onCheckedChange = {
                             intercom = it
-                            if (it) toast(ctx, "对讲通道预留，当前版本暂不传输语音")
+                            toast(ctx, if (it) "已开启对讲：进入任务地图按住「对讲」说话" else "已关闭对讲")
                         },
                         colors = SwitchDefaults.colors(
                             checkedTrackColor = WColors.Primary,
@@ -201,15 +218,15 @@ fun RoomScreen(roomId: String, onBack: () -> Unit, onEnterTask: () -> Unit) {
                     )
                 }
             }
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(Space.x4))
 
             // ---------- 成员列表 ----------
             SectionHeader(
                 "队伍成员",
-                modifier = Modifier.padding(horizontal = 20.dp),
+                modifier = Modifier.padding(horizontal = Space.screenH),
                 trailing = { Text("共 ${state.members.size} 人", style = MaterialTheme.typography.labelSmall, color = WColors.OnBgDim) },
             )
-            GlassCard(Modifier.padding(horizontal = 20.dp)) {
+            GlassCard(Modifier.padding(horizontal = Space.screenH)) {
                 if (state.members.isEmpty()) {
                     Text(
                         "暂无其他成员，等待队友加入…",
@@ -217,16 +234,16 @@ fun RoomScreen(roomId: String, onBack: () -> Unit, onEnterTask: () -> Unit) {
                         color = WColors.OnBgDim,
                     )
                 } else {
-                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(Space.x2)) {
                         state.members.forEach { m -> MemberRow(m) }
                     }
                 }
             }
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(Space.x4))
 
             // ---------- 聊天大厅 ----------
-            SectionHeader("聊天大厅", modifier = Modifier.padding(horizontal = 20.dp))
-            GlassCard(Modifier.padding(horizontal = 20.dp)) {
+            SectionHeader("聊天大厅", modifier = Modifier.padding(horizontal = Space.screenH))
+            GlassCard(Modifier.padding(horizontal = Space.screenH)) {
                 Column {
                     Box(
                         Modifier
@@ -245,7 +262,7 @@ fun RoomScreen(roomId: String, onBack: () -> Unit, onEnterTask: () -> Unit) {
                                 Modifier
                                     .fillMaxSize()
                                     .verticalScroll(rememberScrollState()),
-                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(Space.x2),
                             ) {
                                 chats.takeLast(30).forEach { c ->
                                     val mine = c.from == userId
@@ -263,14 +280,14 @@ fun RoomScreen(roomId: String, onBack: () -> Unit, onEnterTask: () -> Unit) {
                                             Modifier
                                                 .background(
                                                     if (mine) WColors.Primary.copy(alpha = 0.16f) else WColors.Glass,
-                                                    RoundedCornerShape(12.dp),
+                                                    Radius.mdShape,
                                                 )
                                                 .border(
                                                     1.dp,
                                                     if (mine) WColors.Primary.copy(alpha = 0.4f) else WColors.GlassBorder,
-                                                    RoundedCornerShape(12.dp),
+                                                    Radius.mdShape,
                                                 )
-                                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                                                .padding(horizontal = Space.x3, vertical = Space.x2),
                                         ) {
                                             Text(c.text, style = MaterialTheme.typography.bodyMedium, color = WColors.OnBg)
                                         }
@@ -279,7 +296,7 @@ fun RoomScreen(roomId: String, onBack: () -> Unit, onEnterTask: () -> Unit) {
                             }
                         }
                     }
-                    Spacer(Modifier.height(10.dp))
+                    Spacer(Modifier.height(Space.x3))
                     if (role == "OBSERVER") {
                         Text(
                             "观战模式（只读，不能发送消息）",
@@ -294,7 +311,7 @@ fun RoomScreen(roomId: String, onBack: () -> Unit, onEnterTask: () -> Unit) {
                                 modifier = Modifier.weight(1f),
                                 placeholder = { Text("发送给队友…", color = WColors.OnBgDim, style = MaterialTheme.typography.bodyMedium) },
                                 singleLine = true,
-                                shape = RoundedCornerShape(12.dp),
+                                shape = Radius.mdShape,
                                 textStyle = MaterialTheme.typography.bodyLarge,
                                 colors = OutlinedTextFieldDefaults.colors(
                                     focusedBorderColor = WColors.Primary,
@@ -304,7 +321,7 @@ fun RoomScreen(roomId: String, onBack: () -> Unit, onEnterTask: () -> Unit) {
                                     unfocusedTextColor = WColors.OnBg,
                                 ),
                             )
-                            Spacer(Modifier.width(8.dp))
+                            Spacer(Modifier.width(Space.x2))
                             Box(
                                 Modifier
                                     .size(42.dp)
@@ -329,7 +346,7 @@ fun RoomScreen(roomId: String, onBack: () -> Unit, onEnterTask: () -> Unit) {
                     }
                 }
             }
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(Space.x4))
         }
 
         // ---------- 进入任务（固定在页面底部，一进房间即可见） ----------
@@ -338,17 +355,22 @@ fun RoomScreen(roomId: String, onBack: () -> Unit, onEnterTask: () -> Unit) {
             Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(horizontal = 20.dp)
-                .padding(bottom = 16.dp),
+                .padding(horizontal = Space.screenH)
+                .padding(bottom = Space.x4),
         ) { onEnterTask() }
     }
 }
 
-/** 成员行：状态点 + 昵称 + 角色 + 采样数 + 目标驻留 */
+/** 成员行：状态点 + 昵称 + 角色 + 采样数 + 目标驻留（统一 44dp 行高） */
 @Composable
 private fun MemberRow(m: MemberView) {
     val isCaptain = m.role == "CAPTAIN"
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(44.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Box(
             Modifier
                 .size(10.dp)
@@ -359,7 +381,7 @@ private fun MemberRow(m: MemberView) {
                     CircleShape,
                 ),
         )
-        Spacer(Modifier.width(10.dp))
+        Spacer(Modifier.width(Space.x3))
         Text(
             m.name + if (isCaptain) " · 队长" else if (m.role == "OBSERVER") " · 观战" else "",
             style = MaterialTheme.typography.bodyMedium,

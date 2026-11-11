@@ -11,7 +11,11 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
@@ -20,11 +24,14 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
@@ -32,22 +39,19 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.unit.dp
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
-import androidx.compose.foundation.clickable
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.runtime.remember
-import androidx.compose.ui.draw.alpha
+import com.gakj.weilie.ui.theme.Hairline.hairline
 
 /**
- * 液态玻璃材质组件库：玻璃卡、发光按钮、脉冲录制点、动画信号条、统计芯片。
- * 材质原则：多层半透明 + 细描边 + 顶部高光渐变；无性能陷阱（不实时 blur，用层叠近似）。
+ * 物料组件库（v0.12 质感版）。
+ *
+ * 材质原则从「液态玻璃」收敛成「哑光面板」：
+ * - 面板 = 一层 5%~8% 白 + 1dp 发丝描边，不用模糊、不用外发光；
+ * - 主按钮 = 实心主色胶囊（不再用主色→辅助色渐变，那种渐变在深色底上会发脏）；
+ * - 所有可点元素统一 0.96/0.97 按压缩放 + 弹簧，让界面「有手感」但不飘。
  */
 
 @Composable
-fun Modifier.glass(shape: Shape = RoundedCornerShape(20.dp), filled: Boolean = true): Modifier {
+fun Modifier.glass(shape: Shape = Radius.lgShape, filled: Boolean = true): Modifier {
     val bg = if (filled) Brush.linearGradient(
         colors = listOf(WColors.GlassTop, WColors.GlassBottom),
         start = Offset(0f, 0f), end = Offset(0f, Float.MAX_VALUE),
@@ -63,7 +67,7 @@ fun Modifier.glass(shape: Shape = RoundedCornerShape(20.dp), filled: Boolean = t
  * 深色主题 → 深色玻璃 + 白字；亮色主题 → 磨砂白玻璃 + 深字（色值由 applyTheme 统一给）。
  */
 @Composable
-fun Modifier.mapGlass(shape: Shape = RoundedCornerShape(20.dp), filled: Boolean = true): Modifier {
+fun Modifier.mapGlass(shape: Shape = Radius.lgShape, filled: Boolean = true): Modifier {
     val bg = if (filled) Brush.linearGradient(
         colors = listOf(WColors.MapGlassTop, WColors.MapGlassBottom),
         start = Offset(0f, 0f), end = Offset(0f, Float.MAX_VALUE),
@@ -78,12 +82,12 @@ fun Modifier.mapGlass(shape: Shape = RoundedCornerShape(20.dp), filled: Boolean 
         )
 }
 
-/** 玻璃卡片容器（带按压缩放反馈）；给 [onLongClick] 时支持长按 */
+/** 面板卡片（带按压缩放反馈）；给 [onLongClick] 时支持长按 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun GlassCard(
     modifier: Modifier = Modifier,
-    shape: Shape = RoundedCornerShape(20.dp),
+    shape: Shape = Radius.lgShape,
     onClick: (() -> Unit)? = null,
     onLongClick: (() -> Unit)? = null,
     onMap: Boolean = false,
@@ -92,7 +96,7 @@ fun GlassCard(
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val scale by animateFloatAsState(
-        targetValue = if (pressed) 0.97f else 1f,
+        targetValue = if (pressed) 0.985f else 1f,
         animationSpec = Motion.bouncy(),
         label = "cardPress",
     )
@@ -112,11 +116,16 @@ fun GlassCard(
                     else -> Modifier
                 },
             )
-            .padding(16.dp),
+            .padding(Space.card),
     ) { content() }
 }
 
-/** 主操作按钮：渐变发光 + 按压弹簧 */
+/**
+ * 主操作按钮：实心主色胶囊。
+ *
+ * 旧版是「主色→紫罗兰」渐变，深色底上彩色渐变边缘会发灰发脏，且全屏主按钮
+ * 过大过亮。现在改为单一主色 + 轻微顶部高光，高度固定 48dp，宽高比更稳。
+ */
 @Composable
 fun GlowButton(
     text: String,
@@ -126,21 +135,54 @@ fun GlowButton(
 ) {
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
-    val scale by animateFloatAsState(if (pressed) 0.96f else 1f, Motion.bouncy(), label = "btnPress")
-    val alpha by animateFloatAsState(if (enabled) 1f else 0.45f, label = "btnAlpha")
+    val scale by animateFloatAsState(if (pressed) 0.965f else 1f, Motion.bouncy(), label = "btnPress")
+    // 禁用态不再用「主色整体降透明度」——那样仍是一大块彩色，看起来像可点。
+    // 改为中性面板 + 发丝描边 + 弱文字，语义上明确「还不能按」。
+    val bg by animateColorAsState(if (enabled) WColors.Primary else WColors.ChipBg, label = "btnBg")
+    val fg by animateColorAsState(if (enabled) WColors.OnPrimary else WColors.OnBgDim, label = "btnFg")
     Box(
         modifier = modifier
             .scale(scale)
-            .alpha(alpha)
-            .clip(RoundedCornerShape(16.dp))
-            .background(
-                Brush.linearGradient(listOf(WColors.Primary, WColors.Secondary)),
-            )
+            .clip(Radius.pillShape)
+            .background(bg)
+            .then(if (enabled) Modifier else Modifier.hairline(Radius.pillShape))
             .clickable(interactionSource = interaction, indication = null, enabled = enabled) { onClick() }
-            .padding(horizontal = 22.dp, vertical = 13.dp),
+            .padding(horizontal = 24.dp, vertical = 14.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(text, style = MaterialTheme.typography.labelLarge, color = WColors.OnPrimary)
+        Text(
+            text,
+            style = MaterialTheme.typography.labelLarge,
+            color = fg,
+        )
+    }
+}
+
+/** 次级按钮：发丝描边胶囊，用于「取消 / 重画 / 关闭」这类不争夺注意力的动作 */
+@Composable
+fun OutlineButton(
+    text: String,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(if (pressed) 0.965f else 1f, Motion.bouncy(), label = "outlinePress")
+    Box(
+        modifier = modifier
+            .scale(scale)
+            .clip(Radius.pillShape)
+            .then(Modifier.hairline(Radius.pillShape, strong = true))
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                enabled = enabled,
+            ) { onClick() }
+            .padding(horizontal = 20.dp, vertical = 13.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(text, style = MaterialTheme.typography.labelLarge, color = WColors.OnBg)
     }
 }
 
@@ -149,12 +191,12 @@ fun GlowButton(
 fun PulsingDot(color: Color = WColors.Danger, size: androidx.compose.ui.unit.Dp = 10.dp) {
     val transition = rememberInfiniteTransition(label = "pulse")
     val s by transition.animateFloat(
-        initialValue = 0.85f, targetValue = 1.35f,
-        animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse), label = "pulseScale",
+        initialValue = 0.85f, targetValue = 1.30f,
+        animationSpec = infiniteRepeatable(tween(720), RepeatMode.Reverse), label = "pulseScale",
     )
     val glow by transition.animateFloat(
-        initialValue = 0.25f, targetValue = 0.7f,
-        animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse), label = "pulseGlow",
+        initialValue = 0.22f, targetValue = 0.55f,
+        animationSpec = infiniteRepeatable(tween(720), RepeatMode.Reverse), label = "pulseGlow",
     )
     Box(
         Modifier
@@ -188,31 +230,46 @@ fun SignalBars(level: Int, barColor: Color? = null, modifier: Modifier = Modifie
     }
 }
 
-/** 数据芯片：标签+值，等宽渲染 */
+/** 数据芯片：标签 + 等宽值 */
 @Composable
 fun StatChip(label: String, value: String, modifier: Modifier = Modifier, valueColor: Color = WColors.OnBg) {
-    Box(
+    Column(
         modifier
-            .clip(RoundedCornerShape(12.dp))
+            .clip(Radius.smShape)
             .background(WColors.ChipBg)
-            .border(1.dp, WColors.ChipBorder, RoundedCornerShape(12.dp))
-            .padding(horizontal = 10.dp, vertical = 6.dp),
+            .border(1.dp, WColors.ChipBorder, Radius.smShape)
+            .padding(horizontal = 10.dp, vertical = 7.dp),
     ) {
-        androidx.compose.foundation.layout.Column {
-            Text(label, style = MaterialTheme.typography.labelSmall, color = WColors.OnBgDim)
-            Text(value, style = MonoText.style, color = valueColor)
-        }
+        Text(label, style = MaterialTheme.typography.labelSmall, color = WColors.OnBgDim)
+        Spacer(Modifier.height(2.dp))
+        Text(value, style = MonoText.style, color = valueColor)
     }
 }
 
-/** 分区标题 */
+/** 分区标题：去掉装饰性色条，用字阶 + 字距建立层级 */
 @Composable
 fun SectionHeader(text: String, modifier: Modifier = Modifier, trailing: @Composable (() -> Unit)? = null) {
-    Row(modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(4.dp, 16.dp).clip(RoundedCornerShape(2.dp)).background(WColors.Primary))
-        Spacer(Modifier.width(8.dp))
-        Text(text, style = MaterialTheme.typography.titleMedium, color = WColors.OnBg)
+    Row(modifier.padding(horizontal = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text,
+            style = MaterialTheme.typography.titleMedium,
+            color = WColors.OnBg,
+        )
         Spacer(Modifier.weight(1f))
         trailing?.invoke()
     }
+}
+
+/**
+ * 小标签（eyebrow）：全大写拉丁/短中文，字距 1.2sp，弱色。
+ * 用在区块上方做「分类」提示，而不是把每个标题都加粗放大。
+ */
+@Composable
+fun Eyebrow(text: String, modifier: Modifier = Modifier, color: Color = WColors.OnBgDim) {
+    Text(
+        text.uppercase(),
+        modifier = modifier,
+        style = MaterialTheme.typography.labelSmall,
+        color = color,
+    )
 }

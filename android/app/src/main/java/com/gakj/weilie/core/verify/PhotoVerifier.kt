@@ -6,6 +6,7 @@ import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
+import io.ktor.client.call.body
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
@@ -159,6 +160,10 @@ private data class RegisterResp(
 @Serializable
 private data class VerifyBody(val code: String, val sha256: String)
 
+/** POST /api/photo/upload 响应（只需要 ok） */
+@Serializable
+private data class UploadAck(val ok: Boolean = false, val bytes: Int = 0)
+
 @Serializable
 private data class VerifyRecordDto(
     val code: String = "",
@@ -251,6 +256,37 @@ class PhotoVerifier(baseUrl: String, private val store: VerifyStore? = null) {
             )
             dto.code to dto.sig
         }
+    }
+
+    /**
+     * 把照片原图上传到服务端（按验证码存），供同一房间的其他队员打开查看。
+     *
+     * 失败不抛异常：调用方多数是「拍照后尽力上传」，失败时队友只能看登记信息。
+     */
+    suspend fun uploadFile(code: String, file: File): Boolean {
+        val clean = code.trim().uppercase()
+        if (clean.isBlank() || !file.isFile || file.length() <= 0L) return false
+        return runCatching {
+            withTimeout(20_000L) {
+                val resp = client.post("$base/api/photo/upload?code=$clean") {
+                    contentType(ContentType.Application.OctetStream)
+                    setBody(file.readBytes())
+                }.bodyAsText()
+                json.decodeFromString(UploadAck.serializer(), resp).ok
+            }
+        }.getOrDefault(false)
+    }
+
+    /** 下载队友上传的照片原图；没有上传/离线/异常都返回 null */
+    suspend fun fetchRemoteImage(code: String): ByteArray? {
+        val clean = code.trim().uppercase()
+        if (clean.isBlank()) return null
+        return runCatching {
+            withTimeout(15_000L) {
+                val resp = client.get("$base/api/photo/file?code=$clean")
+                if (resp.status.value in 200..299) resp.body<ByteArray>() else null
+            }
+        }.getOrNull()
     }
 
     /**

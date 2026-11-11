@@ -12,8 +12,14 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Flag
+import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
@@ -36,10 +42,9 @@ import com.gakj.weilie.core.model.SampleRecord
 import com.gakj.weilie.core.rating.SignalRating
 import com.gakj.weilie.core.store.SessionManifest
 import com.gakj.weilie.ui.AppGraph
-import com.gakj.weilie.ui.common.GlassTextButton
+import com.gakj.weilie.ui.common.GlassIconButton
 import com.gakj.weilie.ui.common.KeyValueRow
 import com.gakj.weilie.ui.common.ScreenTopBar
-import com.gakj.weilie.ui.common.StatusBadge
 import com.gakj.weilie.ui.common.exportCsvAndShare
 import com.gakj.weilie.ui.common.exportGeoJsonAndShare
 import com.gakj.weilie.ui.common.exportKmlAndShare
@@ -49,8 +54,9 @@ import com.gakj.weilie.ui.common.toast
 import com.gakj.weilie.ui.map.MapCamera
 import com.gakj.weilie.ui.map.MapCanvas
 import com.gakj.weilie.ui.theme.GlassCard
+import com.gakj.weilie.ui.theme.OutlineButton
 import com.gakj.weilie.ui.theme.SectionHeader
-import com.gakj.weilie.ui.theme.StatChip
+import com.gakj.weilie.ui.theme.Space
 import com.gakj.weilie.ui.theme.WColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -124,8 +130,8 @@ fun SessionDetailScreen(taskId: String, onBack: () -> Unit) {
         )
 
         // ---------- 小地图回放 ----------
-        SectionHeader("轨迹回放", modifier = Modifier.padding(horizontal = 20.dp))
-        GlassCard(Modifier.padding(horizontal = 20.dp)) {
+        SectionHeader("轨迹回放", modifier = Modifier.padding(horizontal = Space.screenH))
+        GlassCard(Modifier.padding(horizontal = Space.screenH)) {
             Column {
                 androidx.compose.foundation.layout.Box(
                     Modifier
@@ -142,11 +148,20 @@ fun SessionDetailScreen(taskId: String, onBack: () -> Unit) {
                         camera = camera,
                     )
                 }
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(Space.x2))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    GlassTextButton(if (playing) "暂停" else "播放") { playing = !playing }
-                    Spacer(Modifier.size(8.dp))
-                    GlassTextButton("结尾") { replayIdx = samples.size.toFloat(); playing = false }
+                    GlassIconButton(
+                        icon = if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                        size = 44.dp,
+                    ) { playing = !playing }
+                    Spacer(Modifier.width(Space.x2))
+                    GlassIconButton(icon = Icons.Rounded.SkipNext, size = 44.dp) {
+                        replayIdx = samples.size.toFloat(); playing = false
+                    }
+                    Spacer(Modifier.width(Space.x2))
+                    GlassIconButton(icon = Icons.Rounded.Flag, size = 44.dp) {
+                        replayIdx = 0f; playing = false
+                    }
                     Spacer(Modifier.weight(1f))
                     Text(
                         "${shown.size} / ${samples.size} 点",
@@ -169,56 +184,59 @@ fun SessionDetailScreen(taskId: String, onBack: () -> Unit) {
                 )
             }
         }
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(Space.x4))
 
         // ---------- 统计 ----------
-        SectionHeader("统计", modifier = Modifier.padding(horizontal = 20.dp))
-        GlassCard(Modifier.padding(horizontal = 20.dp)) {
+        SectionHeader("统计", modifier = Modifier.padding(horizontal = Space.screenH))
+        GlassCard(Modifier.padding(horizontal = Space.screenH)) {
             Column {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    StatChip("样本点", "${samples.size}", valueColor = WColors.Primary)
-                    StatChip("总时长", fmtDur(durationMs))
+                Row {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Space.x1)) {
+                        KeyValueRow("样本点", "${samples.size}", WColors.Primary)
+                        KeyValueRow("总时长", fmtDur(durationMs))
+                        KeyValueRow("目标驻留", "$onTargetN 点", WColors.Success)
+                    }
+                    Spacer(Modifier.size(Space.x4))
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Space.x1)) {
+                        KeyValueRow("目标可见", "$seenN 点", WColors.Track)
+                        KeyValueRow("平均 RSRP", avgRsrp?.let { "$it dBm" } ?: "—")
+                        KeyValueRow("最优 RSRP", bestRsrp?.let { "$it dBm" } ?: "—")
+                    }
                 }
-                Spacer(Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    StatChip("目标驻留", "$onTargetN 点", valueColor = WColors.Success)
-                    StatChip("目标可见", "$seenN 点", valueColor = WColors.Track)
-                }
-                Spacer(Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    StatChip("平均 RSRP", avgRsrp?.let { "$it dBm" } ?: "—")
-                    StatChip("最优 RSRP", bestRsrp?.let { "$it dBm" } ?: "—")
-                }
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(Space.x3))
                 KeyValueRow("轨迹长度", "%.0f 米".format(distM))
                 fit?.confidence?.let { c ->
                     KeyValueRow("拟合置信度", "${c.level.name} · ${c.score0to100} 分 · 均误差 %.0f 米".format(c.meanAccuracyM))
                     KeyValueRow("参与拟合", "${fit?.inlierCount} / ${fit?.totalSamples} 点")
                 }
-                m?.targetRawInput?.let { KeyValueRow("目标输入", it, WColors.Primary) }
+                m?.targetRawInput?.let { KeyValueRow("目标输入", prettyRawInput(it), WColors.Primary) }
             }
         }
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(Space.x4))
 
         // ---------- 导出 ----------
-        SectionHeader("导出", modifier = Modifier.padding(horizontal = 20.dp))
-        GlassCard(Modifier.padding(horizontal = 20.dp)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                GlassTextButton("CSV", Modifier.weight(1f)) { exportCsvAndShare(ctx, AppGraph.store, taskId) }
-                GlassTextButton("GeoJSON", Modifier.weight(1f)) {
+        SectionHeader("导出", modifier = Modifier.padding(horizontal = Space.screenH))
+        GlassCard(Modifier.padding(horizontal = Space.screenH)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(Space.x3)) {
+                OutlineButton("CSV", Modifier.weight(1f)) { exportCsvAndShare(ctx, AppGraph.store, taskId) }
+                OutlineButton("GeoJSON", Modifier.weight(1f)) {
                     exportGeoJsonAndShare(ctx, taskId, samples, null, fit)
                 }
-                GlassTextButton("KML", Modifier.weight(1f)) {
+                OutlineButton("KML", Modifier.weight(1f)) {
                     exportKmlAndShare(ctx, taskId, m?.title ?: taskId, samples, fit)
                 }
             }
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(Space.x2))
             Text(
                 "导出文件保存在应用 exports 目录并弹出分享面板",
                 style = MaterialTheme.typography.labelSmall,
                 color = WColors.OnBgDim,
             )
         }
-        Spacer(Modifier.navigationBarsPadding().height(24.dp))
+        Spacer(Modifier.navigationBarsPadding().height(Space.x6))
     }
 }
+
+/** 「NCI5677244420」这类没空格的原始输入，展示时补上制式与编号之间的空格 */
+private fun prettyRawInput(raw: String): String =
+    raw.replace(Regex("^(NCI|ECI|LAC|CI|PCI)(?=[0-9])"), "$1 ")

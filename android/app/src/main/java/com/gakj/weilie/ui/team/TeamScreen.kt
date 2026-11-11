@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -26,11 +27,14 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -42,9 +46,12 @@ import com.gakj.weilie.ui.common.ScreenTopBar
 import com.gakj.weilie.ui.common.randomRoomCode
 import com.gakj.weilie.ui.common.toast
 import com.gakj.weilie.ui.theme.GlassCard
+import com.gakj.weilie.ui.theme.Hairline.hairline
 import com.gakj.weilie.ui.theme.GlowButton
 import com.gakj.weilie.ui.theme.MonoText
+import com.gakj.weilie.ui.theme.Radius
 import com.gakj.weilie.ui.theme.SectionHeader
+import com.gakj.weilie.ui.theme.Space
 import com.gakj.weilie.ui.theme.WColors
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
@@ -73,6 +80,7 @@ fun TeamScreen(onBack: () -> Unit, onScan: () -> Unit, onJoined: (String) -> Uni
     var code by remember { mutableStateOf(AppGraph.lastJoinCode ?: "") }
     var role by remember { mutableStateOf("MEMBER") } // 加入身份 MEMBER / OBSERVER
     var createRole by remember { mutableStateOf("CAPTAIN") } // 创建身份 CAPTAIN / MEMBER / OBSERVER
+    var tab by remember { mutableIntStateOf(0) } // 0 创建房间 / 1 加入房间
     var busy by remember { mutableStateOf(false) }
     var err by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
@@ -188,8 +196,8 @@ fun TeamScreen(onBack: () -> Unit, onScan: () -> Unit, onJoined: (String) -> Uni
         ScreenTopBar("多人协同", "与队友共享位置、标记与任务圈", onBack)
         Spacer(Modifier.height(6.dp))
 
-        SectionHeader("我的身份", modifier = Modifier.padding(horizontal = 20.dp))
-        GlassCard(Modifier.padding(horizontal = 20.dp)) {
+        SectionHeader("我的身份", modifier = Modifier.padding(horizontal = Space.screenH))
+        GlassCard(Modifier.padding(horizontal = Space.screenH)) {
             GlassTextField(
                 value = nickname,
                 onValueChange = { nickname = it.take(16) },
@@ -197,10 +205,10 @@ fun TeamScreen(onBack: () -> Unit, onScan: () -> Unit, onJoined: (String) -> Uni
                 placeholder = "队员昵称",
             )
         }
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(Space.x3))
 
-        SectionHeader("服务器", modifier = Modifier.padding(horizontal = 20.dp))
-        GlassCard(Modifier.padding(horizontal = 20.dp)) {
+        SectionHeader("服务器", modifier = Modifier.padding(horizontal = Space.screenH))
+        GlassCard(Modifier.padding(horizontal = Space.screenH)) {
             Column {
                 GlassTextField(
                     value = server,
@@ -217,79 +225,87 @@ fun TeamScreen(onBack: () -> Unit, onScan: () -> Unit, onJoined: (String) -> Uni
                 )
             }
         }
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(Space.x4))
 
-        SectionHeader("创建房间", modifier = Modifier.padding(horizontal = 20.dp))
-        GlassCard(Modifier.padding(horizontal = 20.dp)) {
-            Column {
-                Text(
-                    "先选择你在队伍中的身份，再创建房间",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = WColors.OnBgDim,
-                )
-                Spacer(Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    RoleOption("队长", createRole == "CAPTAIN", Modifier.weight(1f)) { createRole = "CAPTAIN" }
-                    RoleOption("队员", createRole == "MEMBER", Modifier.weight(1f)) { createRole = "MEMBER" }
-                    RoleOption("观战", createRole == "OBSERVER", Modifier.weight(1f)) { createRole = "OBSERVER" }
-                }
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    if (createRole == "CAPTAIN") "队长：可划分任务区并下发给队员"
-                    else if (createRole == "MEMBER") "队员：接收任务圈并上报位置与样本"
-                    else "观战：只读查看队伍动态，不上报位置",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = WColors.OnBgDim,
-                )
-                Spacer(Modifier.height(10.dp))
-                GlowButton("创建房间", Modifier.fillMaxWidth(), enabled = !busy) { createRoom() }
-            }
+        SectionHeader("房间", modifier = Modifier.padding(horizontal = Space.screenH))
+        // 创建/加入合成一个分段控件：同屏只有一个主按钮，避免两条大按钮抢注意力
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Space.screenH)
+                .clip(Radius.pillShape)
+                .background(WColors.ChipBg)
+                .padding(5.dp),
+        ) {
+            TeamTab("创建房间", tab == 0, Modifier.weight(1f)) { tab = 0 }
+            TeamTab("加入房间", tab == 1, Modifier.weight(1f)) { tab = 1 }
         }
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(Space.x3))
 
-        SectionHeader("加入房间", modifier = Modifier.padding(horizontal = 20.dp))
-        GlassCard(Modifier.padding(horizontal = 20.dp)) {
-            Column {
-                GlassTextField(
-                    value = code,
-                    onValueChange = { v ->
-                        code = v.uppercase().filter { it.isLetterOrDigit() }.take(8)
-                    },
-                    label = "队伍码（4~16 位）",
-                    placeholder = "ABC123",
-                    mono = true,
-                )
-                Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Rounded.QrCodeScanner,
-                        contentDescription = null,
-                        tint = WColors.Primary,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(Modifier.width(6.dp))
+        if (tab == 0) {
+            GlassCard(Modifier.padding(horizontal = Space.screenH)) {
+                Column {
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        RoleOption("队长", createRole == "CAPTAIN", Modifier.weight(1f)) { createRole = "CAPTAIN" }
+                        RoleOption("队员", createRole == "MEMBER", Modifier.weight(1f)) { createRole = "MEMBER" }
+                        RoleOption("观战", createRole == "OBSERVER", Modifier.weight(1f)) { createRole = "OBSERVER" }
+                    }
+                    Spacer(Modifier.height(Space.x3))
                     Text(
-                        "也可扫描队友出示的队伍码",
+                        if (createRole == "CAPTAIN") "队长：可划分任务区并下发给队员"
+                        else if (createRole == "MEMBER") "队员：接收任务圈并上报位置与样本"
+                        else "观战：只读查看队伍动态，不上报位置",
                         style = MaterialTheme.typography.labelSmall,
                         color = WColors.OnBgDim,
-                        modifier = Modifier.weight(1f),
                     )
-                    GlassTextButton("扫一扫") {
-                        onScan()
+                    Spacer(Modifier.height(Space.x3))
+                    GlowButton("创建房间", Modifier.fillMaxWidth(), enabled = !busy) { createRoom() }
+                }
+            }
+        } else {
+            GlassCard(Modifier.padding(horizontal = Space.screenH)) {
+                Column {
+                    GlassTextField(
+                        value = code,
+                        onValueChange = { v ->
+                            code = v.uppercase().filter { it.isLetterOrDigit() }.take(8)
+                        },
+                        label = "队伍码（4~16 位）",
+                        placeholder = "ABC123",
+                        mono = true,
+                    )
+                    Spacer(Modifier.height(Space.x2))
+                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Rounded.QrCodeScanner,
+                            contentDescription = null,
+                            tint = WColors.Primary,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            "也可扫描队友出示的队伍码",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = WColors.OnBgDim,
+                            modifier = Modifier.weight(1f),
+                        )
+                        GlassTextButton("扫一扫") {
+                            onScan()
+                        }
                     }
+                    Spacer(Modifier.height(Space.x3))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        RoleOption("队员", role == "MEMBER", Modifier.weight(1f)) { role = "MEMBER" }
+                        RoleOption("观战（只读）", role == "OBSERVER", Modifier.weight(1f)) { role = "OBSERVER" }
+                    }
+                    Spacer(Modifier.height(Space.x3))
+                    GlowButton("加入房间", Modifier.fillMaxWidth(), enabled = !busy) { joinRoom() }
                 }
-                Spacer(Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    RoleOption("队员", role == "MEMBER", Modifier.weight(1f)) { role = "MEMBER" }
-                    RoleOption("观战（只读）", role == "OBSERVER", Modifier.weight(1f)) { role = "OBSERVER" }
-                }
-                Spacer(Modifier.height(12.dp))
-                GlowButton("加入房间", Modifier.fillMaxWidth(), enabled = !busy) { joinRoom() }
             }
         }
 
         err?.let {
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(Space.x3))
             Text(
                 it,
                 style = MaterialTheme.typography.bodyMedium,
@@ -297,10 +313,64 @@ fun TeamScreen(onBack: () -> Unit, onScan: () -> Unit, onJoined: (String) -> Uni
                 textAlign = TextAlign.Center,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp),
+                    .padding(horizontal = Space.screenH),
             )
         }
+        Spacer(Modifier.height(Space.x5))
+        TeamTips()
         Spacer(Modifier.navigationBarsPadding().height(24.dp))
+    }
+}
+
+/** 底部玩法说明：三行，讲清队长/队员/观战的差别，避免半屏空白 */
+@Composable
+private fun TeamTips() {
+    GlassCard(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Space.screenH),
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(Space.x3)) {
+            TeamTipLine("队长", "在地图上划任务区，支持矩形、圈层、扇区和自由绘制")
+            TeamTipLine("队员", "进入任务地图自动上报位置与采样点，可导航到队长的标记")
+            TeamTipLine("观战", "只读房间状态，不采集、不上报，适合指挥席看全局")
+        }
+    }
+}
+
+@Composable
+private fun TeamTipLine(tag: String, text: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            Modifier
+                .clip(Radius.smShape)
+                .background(WColors.ChipBg)
+                .hairline(Radius.smShape)
+                .padding(horizontal = Space.x2, vertical = 3.dp),
+        ) {
+            Text(tag, style = MaterialTheme.typography.labelSmall, color = WColors.Primary)
+        }
+        Spacer(Modifier.width(Space.x3))
+        Text(text, style = MaterialTheme.typography.bodySmall, color = WColors.OnBgDim, modifier = Modifier.weight(1f))
+    }
+}
+
+/** 分段控件的一个页签：选中时实心主色，未选中只留弱文字 */
+@Composable
+private fun TeamTab(text: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Box(
+        modifier
+            .clip(Radius.pillShape)
+            .background(if (selected) WColors.Primary else androidx.compose.ui.graphics.Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text,
+            style = MaterialTheme.typography.labelLarge,
+            color = if (selected) WColors.OnPrimary else WColors.OnBgDim,
+        )
     }
 }
 

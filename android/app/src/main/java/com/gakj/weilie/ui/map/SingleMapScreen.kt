@@ -46,6 +46,7 @@ import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.MyLocation
+import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Remove
 import androidx.compose.material.icons.rounded.SmartToy
@@ -70,10 +71,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
@@ -124,6 +128,7 @@ import com.gakj.weilie.ui.theme.GlassCard
 import com.gakj.weilie.ui.theme.GlowButton
 import com.gakj.weilie.ui.theme.MonoText
 import com.gakj.weilie.ui.theme.PulsingDot
+import com.gakj.weilie.ui.theme.Space
 import com.gakj.weilie.ui.theme.WColors
 import com.gakj.weilie.ui.theme.mapGlass
 import kotlinx.coroutines.Dispatchers
@@ -176,6 +181,8 @@ fun SingleMapScreen(
     var showTools by remember { mutableStateOf(false) }
     var showAi by remember { mutableStateOf(false) }
     var showLayers by remember { mutableStateOf(false) }
+    // 顶部 chrome（数据栏 + 图层/目标按钮）实测高度：图层浮层据此落在它下面，而不是盖住数据栏
+    var topChromePx by remember { mutableIntStateOf(0) }
     var showTargetInfo by remember { mutableStateOf(false) }
     var switchCell by remember { mutableStateOf(false) }
     var confirmExit by remember { mutableStateOf(false) }
@@ -727,23 +734,27 @@ fun SingleMapScreen(
             },
         )
 
-        // ---------- 顶部：左侧图层/目标按钮 + 数据栏（2.1/2.2），数据栏展开时按钮列不重叠 ----------
-        Row(
+        // 状态栏压暗：底图是浅色的，系统用浅色主题时白色状态栏图标会看不见。
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(96.dp)
+                .align(Alignment.TopCenter)
+                .background(
+                    Brush.verticalGradient(
+                        listOf(Color(0xF2060910), Color(0x00060910)),
+                    ),
+                ),
+        )
+
+        // ---------- 顶部：数据栏（左右边线对齐）+ 其下的图层/目标按钮 ----------
+        Column(
             Modifier
                 .fillMaxWidth()
                 .statusBarsPadding()
-                .padding(10.dp),
-            verticalAlignment = Alignment.Top,
+                .onGloballyPositioned { topChromePx = it.size.height }
+                .padding(horizontal = Space.screenH, vertical = Space.x2),
         ) {
-            Column(
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                GlassIconButton(Icons.Rounded.Layers, "图层", size = 44.dp, onMap = true) { showLayers = !showLayers }
-                GlassIconButton(Icons.Rounded.Info, "目标", size = 44.dp, onMap = true) { showTargetInfo = true }
-            }
-            Spacer(Modifier.width(10.dp))
-            Box(Modifier.weight(1f)) {
             MapDataBar(
                 running = running,
                 level = level,
@@ -815,6 +826,10 @@ fun SingleMapScreen(
                 expertMode = expertMode,
                 onExpertModeChange = { expertMode = it },
             )
+            Spacer(Modifier.height(Space.x2))
+            Row(horizontalArrangement = Arrangement.spacedBy(Space.x2)) {
+                GlassIconButton(Icons.Rounded.Layers, "图层", size = 40.dp, onMap = true) { showLayers = !showLayers }
+                GlassIconButton(Icons.Rounded.Info, "目标", size = 40.dp, onMap = true) { showTargetInfo = true }
             }
         }
 
@@ -834,7 +849,10 @@ fun SingleMapScreen(
                     Modifier
                         .align(Alignment.TopStart)
                         .statusBarsPadding()
-                        .padding(start = 64.dp, top = 10.dp),
+                        .padding(
+                            start = Space.screenH,
+                            top = Space.x2 + with(LocalDensity.current) { topChromePx.toDp() },
+                        ),
                 ) {
                     MapLayersPanel(
                         current = layerMode,
@@ -887,6 +905,8 @@ fun SingleMapScreen(
                             showCellSearch = true
                         },
                         onDismiss = { showLayers = false },
+                    // 还要给底部「暂停/采集」主钮与比例尺留出空间，避免浮层一开就压住主操作
+                    maxHeight = with(LocalDensity.current) { (maxH - topChromePx).toDp() } - 200.dp,
                     )
                 }
             }
@@ -992,8 +1012,25 @@ fun SingleMapScreen(
                 size = 44.dp,
                 onMap = true,
                 content = {
-                    if (running) PulsingDot(WColors.Danger, 20.dp)
-                    else Icon(Icons.Rounded.PlayArrow, contentDescription = "采集", tint = WColors.OnBg, modifier = Modifier.size(22.dp))
+                    if (running) {
+                        // 暂停语义：红圈里放两条竖杠，不要只放一个红点（红点会被读成「正在录音」而不知道能按）
+                        Box(
+                            Modifier
+                                .size(30.dp)
+                                .clip(CircleShape)
+                                .background(WColors.Danger.copy(alpha = 0.18f)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                Icons.Rounded.Pause,
+                                contentDescription = "暂停采集",
+                                tint = WColors.Danger,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    } else {
+                        Icon(Icons.Rounded.PlayArrow, contentDescription = "采集", tint = WColors.OnBg, modifier = Modifier.size(22.dp))
+                    }
                 },
                 onClick = {
                     if (running) {

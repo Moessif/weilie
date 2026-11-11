@@ -48,6 +48,11 @@ class RoomClient(
     private val _markers = MutableStateFlow<List<WsMsg.Marker>>(emptyList())
     val markers: StateFlow<List<WsMsg.Marker>> = _markers
 
+    /** 语音对讲回调：由房间界面挂载/卸载（不放进 StateFlow，避免每帧重组） */
+    var onAudioStart: ((WsMsg.AudioStart) -> Unit)? = null
+    var onAudioChunk: ((WsMsg.AudioChunk) -> Unit)? = null
+    var onAudioStop: ((WsMsg.AudioStop) -> Unit)? = null
+
     @Volatile
     private var session: DefaultClientWebSocketSession? = null
     private var rxJob: Job? = null
@@ -126,6 +131,9 @@ class RoomClient(
                         sampleCount = it.sampleCount + 1,
                     )
                 }
+                is WsMsg.AudioStart -> onAudioStart?.invoke(msg)
+                is WsMsg.AudioChunk -> onAudioChunk?.invoke(msg)
+                is WsMsg.AudioStop -> onAudioStop?.invoke(msg)
                 is WsMsg.Pong -> Unit
                 is WsMsg.Bye -> Unit
                 is WsMsg.PhotoAck -> Unit
@@ -159,6 +167,20 @@ class RoomClient(
             .values
             .sortedBy { it.ts }
             .takeLast(200)
+    }
+
+    /** 发起语音：只在按住说话时调用一次 */
+    suspend fun audioStart(userId: String, byName: String) {
+        send(WsMsg.AudioStart(userId = userId, byName = byName, ts = System.currentTimeMillis()))
+    }
+
+    /** 一帧语音（base64 PCM），不做本地回放 */
+    suspend fun audioChunk(userId: String, seq: Int, data: String) {
+        send(WsMsg.AudioChunk(userId = userId, seq = seq, data = data, ts = System.currentTimeMillis()))
+    }
+
+    suspend fun audioStop(userId: String) {
+        send(WsMsg.AudioStop(userId = userId, ts = System.currentTimeMillis()))
     }
 
     suspend fun send(msg: WsMsg) {

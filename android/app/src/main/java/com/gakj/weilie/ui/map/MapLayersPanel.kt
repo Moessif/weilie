@@ -2,6 +2,7 @@ package com.gakj.weilie.ui.map
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -28,10 +29,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gakj.weilie.core.fitting.AreaBuilder
@@ -40,6 +43,9 @@ import com.gakj.weilie.core.model.SampleRecord
 import com.gakj.weilie.ui.theme.MonoText
 import com.gakj.weilie.ui.common.HelpHint
 import com.gakj.weilie.ui.common.HelpTexts
+import com.gakj.weilie.ui.theme.Hairline.hairline
+import com.gakj.weilie.ui.theme.Radius
+import com.gakj.weilie.ui.theme.Space
 import com.gakj.weilie.ui.theme.WColors
 import com.gakj.weilie.ui.theme.glass
 import com.gakj.weilie.ui.theme.mapGlass
@@ -90,6 +96,8 @@ fun MapLayersPanel(
     onLibraryToggle: (Boolean) -> Unit = {},
     onLibrarySearch: () -> Unit = {},
     onDismiss: () -> Unit,
+    // 浮层高度上限：调用点传入「屏幕剩余高度」，避免面板从数据栏下方展开时越过屏幕底部
+    maxHeight: Dp = (LocalConfiguration.current.screenHeightDp.dp - 140.dp),
 ) {
     Box(
         Modifier
@@ -99,31 +107,39 @@ fun MapLayersPanel(
     ) {
         Column(
             Modifier
-                .padding(start = 12.dp)
-                .width(252.dp)
+                .padding(start = 0.dp)
+                .width(268.dp)
                 // 叠加图层越加越多（热力参数 5 个滑杆 + 封闭区域成面方式 + 基站库），
                 // 超出屏高时整块面板会被裁掉、下面的选项点不到 → 限制高度并允许滚动
-                .heightIn(max = (LocalConfiguration.current.screenHeightDp.dp - 140.dp))
+                .heightIn(max = maxHeight)
                 .verticalScroll(rememberScrollState())
                 // 先铺一层近不透明底，避免浮层压在数据栏上时底层文字透出叠字
-                .background(WColors.Bg1.copy(alpha = 0.97f), RoundedCornerShape(18.dp))
-                .mapGlass(RoundedCornerShape(18.dp))
+                // 不透明底：浮层压在数据栏/地图上时，避免底层文字透出来
+                .background(
+                    Brush.verticalGradient(listOf(Color(0xFF0C1220), Color(0xFF090E18))),
+                    Radius.lgShape,
+                )
+                .hairline(Radius.lgShape, strong = true)
                 .clickable(
                     interactionSource = androidx.compose.foundation.interaction.MutableInteractionSource(),
                     indication = null,
                 ) { } // 吃掉点击，避免穿透关闭
-                .padding(14.dp),
+                .padding(Space.card),
         ) {
-            Text("地图图层", style = MaterialTheme.typography.titleSmall, color = WColors.OnBg)
-            Spacer(Modifier.height(8.dp))
+            Text(
+                "地图图层",
+                style = MaterialTheme.typography.titleSmall,
+                color = WColors.OnBgDim,
+            )
+            Spacer(Modifier.height(Space.x3))
             MapLayerMode.entries.forEach { m ->
                 val selected = m == current
                 Row(
                     Modifier
                         .fillMaxWidth()
                         .background(
-                            if (selected) WColors.Primary.copy(alpha = 0.08f) else Color.Transparent,
-                            RoundedCornerShape(10.dp),
+                            if (selected) WColors.Primary.copy(alpha = 0.10f) else Color.Transparent,
+                            Radius.mdShape,
                         )
                         .clickable {
                             when (m) {
@@ -133,30 +149,30 @@ fun MapLayersPanel(
                             }
                             onSelect(m)
                         }
-                        .padding(horizontal = 10.dp, vertical = 9.dp),
+                        .padding(horizontal = Space.x2, vertical = Space.x2),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Box(
                         Modifier
-                            .size(16.dp)
-                            .background(
-                                if (selected) WColors.Primary else Color.Transparent,
+                            .size(18.dp)
+                            .border(
+                                1.5.dp,
+                                if (selected) WColors.Primary else WColors.GlassBorder,
                                 CircleShape,
-                            )
-                            .background(WColors.GlassBorder, CircleShape),
+                            ),
                         contentAlignment = Alignment.Center,
                     ) {
                         if (selected) {
-                            Box(Modifier.size(7.dp).background(WColors.OnPrimary, CircleShape))
+                            Box(Modifier.size(8.dp).background(WColors.Primary, CircleShape))
                         }
                     }
-                    Spacer(Modifier.width(10.dp))
+                    Spacer(Modifier.width(Space.x2))
                     Column {
                         Text(m.label, style = MaterialTheme.typography.bodyMedium, color = WColors.OnBg)
                         Text(m.desc, style = MaterialTheme.typography.labelSmall, color = WColors.OnBgDim)
                     }
                 }
-                Spacer(Modifier.height(2.dp))
+                Spacer(Modifier.height(1.dp))
             }
 
             if (showTeamToggles) {
@@ -258,7 +274,7 @@ fun MapLayersPanel(
                     }
                     if (areaMode == AreaBuilder.Mode.SIMULATED) {
                         Text(
-                            "走到哪儿就把那儿画成实测区域；圆/方块越大，覆盖范围越宽",
+                            "只在命中目标的采样点周围铺圆/方块；脱离目标的轨迹不计入实测区域",
                             style = MaterialTheme.typography.labelSmall,
                             color = WColors.OnBgDim.copy(alpha = 0.7f),
                             modifier = Modifier.padding(top = 2.dp),
@@ -343,7 +359,13 @@ private fun LayerToggleRow(label: String, checked: Boolean, onChange: (Boolean) 
         Switch(
             checked = checked,
             onCheckedChange = onChange,
-            colors = SwitchDefaults.colors(checkedTrackColor = WColors.Primary),
+            colors = SwitchDefaults.colors(
+                            checkedThumbColor = WColors.OnPrimary,
+                            checkedTrackColor = WColors.Primary,
+                            uncheckedThumbColor = WColors.OnBgDim,
+                            uncheckedTrackColor = WColors.BarOff,
+                            uncheckedBorderColor = WColors.GlassBorder,
+                        ),
             modifier = Modifier.height(26.dp),
         )
     }
@@ -398,7 +420,8 @@ fun TrackArrowsOverlay(
             val y = (h / 2 - ((lat - camera.centerLat) * 110_540.0 / mpp)).toFloat()
             return if (x in -60f..(w + 60f) && y in -60f..(h + 60f)) Offset(x, y) else null
         }
-        val arrowColor = Color(0xFFA78BFA)
+        // 中性箭头色（原紫罗兰与「整页不用紫」的规范冲突）
+        val arrowColor = WColors.OnBgDim
         var lastPoint: Offset? = null
         var acc = 0f
         val spacing = 56.dp.toPx()

@@ -41,6 +41,8 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -54,16 +56,16 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Cameraswitch
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.FlashOff
+import androidx.compose.material.icons.rounded.FlashOn
 import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -71,6 +73,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -86,11 +89,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -112,13 +117,17 @@ import com.gakj.weilie.core.photo.PhotoRecord
 import com.gakj.weilie.core.telephony.CellWatermark
 import com.gakj.weilie.ui.AppGraph
 import com.gakj.weilie.ui.common.GlassIconButton
-import com.gakj.weilie.ui.common.GlassTextButton
+import com.gakj.weilie.ui.common.GlassTextField
 import com.gakj.weilie.ui.common.hasPerm
 import com.gakj.weilie.ui.common.toast
 import com.gakj.weilie.ui.common.vibrate
 import com.gakj.weilie.ui.map.BaiduBootstrap
 import com.gakj.weilie.ui.map.BaiduCoords
+import com.gakj.weilie.ui.theme.GlowButton
 import com.gakj.weilie.ui.theme.Motion
+import com.gakj.weilie.ui.theme.OutlineButton
+import com.gakj.weilie.ui.theme.Radius
+import com.gakj.weilie.ui.theme.Space
 import com.gakj.weilie.ui.theme.WColors
 import java.io.File
 import java.io.FileOutputStream
@@ -201,6 +210,7 @@ private const val GEO_REFRESH_MS = 30_000L
  * @param onCaptured 拍照并落盘成功后的回调（调用方负责导航/刷新）
  * @param taskId 照片归属的任务 id（单人=task.id，多人="room-<roomId>"）；用于「换任务不显示旧标点」
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun PhotoCameraScreen(
     initialKind: String = "PHOTO",
@@ -231,6 +241,7 @@ fun PhotoCameraScreen(
 
     // ---------- 相机与拍摄状态 ----------
     var lensFacing by remember { mutableStateOf(CameraSelector.LENS_FACING_BACK) }
+    var flashOn by remember { mutableStateOf(false) }
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
     var capturing by remember { mutableStateOf(false) }
     var camError by remember { mutableStateOf<String?>(null) }
@@ -488,7 +499,7 @@ fun PhotoCameraScreen(
     }
     val spec = remember(tick, wmTitle, addressLine, weatherText, hasFix, sims) {
         val cellLines = runCatching {
-            CellWatermark.flatLines(sims, currentLat, currentLon, tick)
+            CellWatermark.flatLines(sims, currentLat, currentLon, tick, hasFix = hasFix)
         }.getOrNull() ?: emptyList()
         buildWatermarkSpec(
             ts = tick,
@@ -525,7 +536,7 @@ fun PhotoCameraScreen(
         val simsNow = runCatching { AppGraph.currentController?.snapshot?.value?.sims }.getOrNull()
             ?: emptyList()
         val cellLines = runCatching {
-            CellWatermark.flatLines(simsNow, currentLat, currentLon, tsNow)
+            CellWatermark.flatLines(simsNow, currentLat, currentLon, tsNow, hasFix = hasFix)
         }.getOrNull() ?: emptyList()
         // 屏幕 / 照片 / index.jsonl 共用同一份 spec → 同一份 lines
         val shotSpec = buildWatermarkSpec(
@@ -598,6 +609,9 @@ fun PhotoCameraScreen(
     }
 
     // ---------- 布局 ----------
+    // 底部控制区（chips + 快门）实际高度：水印块据此上移，避免两类按钮压在水印上
+    var controlsPx by remember { mutableIntStateOf(0) }
+    val density = LocalDensity.current
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         if (granted) {
             CameraPreview(
@@ -605,6 +619,9 @@ fun PhotoCameraScreen(
                 onCaptureReady = { cap ->
                     imageCapture = cap
                     camError = null
+                    runCatching {
+                        cap.flashMode = if (flashOn) ImageCapture.FLASH_MODE_ON else ImageCapture.FLASH_MODE_OFF
+                    }
                 },
                 onError = { msg -> camError = msg },
             )
@@ -622,13 +639,16 @@ fun PhotoCameraScreen(
                     ),
             )
 
-            // 左下角水印块（微信水印相机样式）
+            // 左下角水印块（微信水印相机样式，卡片圆角 Radius.lgShape）
             WatermarkBlock(
                 spec = spec,
                 modifier = Modifier
                     .align(Alignment.BottomStart)
                     .navigationBarsPadding()
-                    .padding(start = 16.dp, bottom = 128.dp)
+                    .padding(
+                        start = Space.screenH,
+                        bottom = with(density) { controlsPx.toDp() } + Space.x6,
+                    )
                     .widthIn(max = 352.dp),
                 onEditTitle = {
                     noteInput = wmTitle
@@ -636,89 +656,136 @@ fun PhotoCameraScreen(
                 },
             )
 
-            // 顶部：关闭 + 品牌小字
-            Row(
+            // 顶部栏：返回 + 品牌 + 闪光 / 切换摄像头（48dp 玻璃圆钮）
+            Box(
                 Modifier
                     .align(Alignment.TopCenter)
                     .fillMaxWidth()
                     .statusBarsPadding()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                    .padding(horizontal = Space.screenH, vertical = Space.x2),
             ) {
-                GlassIconButton(icon = Icons.Rounded.Close, size = 44.dp) { onClose() }
-                Spacer(Modifier.weight(1f))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    GlassIconButton(icon = Icons.Rounded.Close, size = 48.dp) { onClose() }
+                    Spacer(Modifier.weight(1f))
+                    GlassIconButton(
+                        icon = if (flashOn) Icons.Rounded.FlashOn else Icons.Rounded.FlashOff,
+                        size = 48.dp,
+                    ) {
+                        val next = !flashOn
+                        flashOn = next
+                        runCatching {
+                            imageCapture?.flashMode =
+                                if (next) ImageCapture.FLASH_MODE_ON else ImageCapture.FLASH_MODE_OFF
+                        }
+                    }
+                    Spacer(Modifier.width(Space.x2))
+                    GlassIconButton(icon = Icons.Rounded.Cameraswitch, size = 48.dp) {
+                        lensFacing = if (lensFacing == CameraSelector.LENS_FACING_BACK) {
+                            CameraSelector.LENS_FACING_FRONT
+                        } else {
+                            CameraSelector.LENS_FACING_BACK
+                        }
+                        imageCapture = null
+                    }
+                }
                 Text(
                     text = "围猎 · 现场取证",
-                    color = Color.White,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Medium,
+                    color = WColors.OnBg,
+                    style = MaterialTheme.typography.labelSmall,
                     modifier = Modifier
-                        .clip(RoundedCornerShape(999.dp))
-                        .background(Color(0x66000000))
-                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                        .align(Alignment.Center)
+                        .clip(Radius.pillShape)
+                        .background(Color(0x8C000000))
+                        .padding(horizontal = Space.x3, vertical = Space.x1),
                 )
             }
 
-            // 类型 chips
-            Row(
-                Modifier
-                    .align(Alignment.TopStart)
-                    .fillMaxWidth()
-                    .statusBarsPadding()
-                    .padding(top = 60.dp)
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                PHOTO_KIND_CHIPS.forEach { chip ->
-                    val on = chip == selectedChip
-                    Box(
-                        Modifier
-                            .clip(RoundedCornerShape(999.dp))
-                            .background(if (on) WColors.Primary.copy(alpha = 0.15f) else Color(0x8C000000))
-                            .border(
-                                width = 1.dp,
-                                color = if (on) WColors.Primary else Color(0x33FFFFFF),
-                                shape = RoundedCornerShape(999.dp),
-                            )
-                            .clickable { selectedChip = chip }
-                            .padding(horizontal = 12.dp, vertical = 7.dp),
-                    ) {
-                        Text(
-                            text = chip.label,
-                            color = if (on) WColors.Primary else Color.White.copy(alpha = 0.85f),
-                            fontSize = 12.sp,
-                            fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal,
-                        )
-                    }
-                }
-            }
-
-            // 底部条：缩略图 / 快门 / 前后摄
-            Row(
+            // 底部：取证类型 chips + 快门（88dp 白环，按下 0.96）/ 相册缩略图
+            Column(
                 Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
                     .navigationBarsPadding()
-                    .padding(horizontal = 16.dp, vertical = 14.dp),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically,
+                    .onGloballyPositioned { controlsPx = it.size.height }
+                    .padding(bottom = Space.x3),
+                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
+                // 类型 chips：选中实心主色 + OnPrimary，未选中 ChipBg + OnBgDim
+                FlowRow(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = Space.screenH),
+                    horizontalArrangement = Arrangement.spacedBy(Space.x2),
+                    verticalArrangement = Arrangement.spacedBy(Space.x2),
+                    maxItemsInEachRow = 3,
+                ) {
+                    PHOTO_KIND_CHIPS.forEach { chip ->
+                        val on = chip == selectedChip
+                        Box(
+                            Modifier
+                                .clip(Radius.pillShape)
+                                .background(if (on) WColors.Primary else WColors.ChipBg)
+                                .border(1.dp, if (on) WColors.Primary else WColors.ChipBorder, Radius.pillShape)
+                                .clickable { selectedChip = chip }
+                                .padding(horizontal = Space.row, vertical = Space.x2),
+                        ) {
+                            Text(
+                                text = chip.label,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (on) WColors.OnPrimary else WColors.OnBgDim,
+                                fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal,
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(Space.x3))
+
                 Row(
                     Modifier
-                        .clip(RoundedCornerShape(40.dp))
+                        .clip(Radius.pillShape)
                         .background(Color(0x99000000))
-                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                        .padding(horizontal = Space.x4, vertical = Space.x2),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(24.dp),
+                    horizontalArrangement = Arrangement.spacedBy(Space.x8),
                 ) {
-                    // 最近一张缩略图
+                    // 左侧留白：让快门在圆条里保持水平居中
+                    Spacer(Modifier.size(48.dp))
+
+                    // 快门：88dp 白色环 + 内白圆，按下缩到 0.96
+                    val shutterInteraction = remember { MutableInteractionSource() }
+                    val shutterPressed by shutterInteraction.collectIsPressedAsState()
+                    val shutterScale by animateFloatAsState(
+                        targetValue = if (shutterPressed) 0.96f else 1f,
+                        animationSpec = Motion.bouncy(),
+                        label = "shutterScale",
+                    )
                     Box(
                         Modifier
-                            .size(44.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(Color(0x33FFFFFF))
-                            .border(1.dp, Color(0x55FFFFFF), RoundedCornerShape(10.dp))
+                            .size(88.dp)
+                            .scale(shutterScale)
+                            .clip(CircleShape)
+                            .border(3.dp, Color(0xE6FFFFFF), CircleShape)
+                            .clickable(interactionSource = shutterInteraction, indication = null) { onShutter() },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Box(
+                            Modifier
+                                .size(68.dp)
+                                .clip(CircleShape)
+                                .background(Color.White),
+                        )
+                    }
+
+                    // 右侧相册缩略图（最近一张，点击打开相册）
+                    Box(
+                        Modifier
+                            .size(48.dp)
+                            .clip(Radius.mdShape)
+                            .background(WColors.ChipBg)
+                            .border(1.dp, WColors.GlassBorder, Radius.mdShape)
                             .clickable { onOpenGallery() },
                         contentAlignment = Alignment.Center,
                     ) {
@@ -728,66 +795,16 @@ fun PhotoCameraScreen(
                                 bitmap = bitmap.asImageBitmap(),
                                 contentDescription = "最近一张取证照片",
                                 contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize(),
+                                modifier = Modifier.fillMaxSize().clip(Radius.mdShape),
                             )
                         } else {
                             Icon(
                                 imageVector = Icons.Rounded.PhotoLibrary,
                                 contentDescription = "相册",
-                                tint = Color(0xCCFFFFFF),
+                                tint = WColors.OnBgDim,
                                 modifier = Modifier.size(22.dp),
                             )
                         }
-                    }
-
-                    // 快门：白色环 + 内圆，按下缩到 0.92
-                    val shutterInteraction = remember { MutableInteractionSource() }
-                    val shutterPressed by shutterInteraction.collectIsPressedAsState()
-                    val shutterScale by animateFloatAsState(
-                        targetValue = if (shutterPressed) 0.92f else 1f,
-                        animationSpec = Motion.bouncy(),
-                        label = "shutterScale",
-                    )
-                    Box(
-                        Modifier
-                            .size(72.dp)
-                            .clip(CircleShape)
-                            .border(3.dp, Color(0xE6FFFFFF), CircleShape)
-                            .clickable(interactionSource = shutterInteraction, indication = null) { onShutter() },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Box(
-                            Modifier
-                                .size(56.dp)
-                                .scale(shutterScale)
-                                .clip(CircleShape)
-                                .background(Color.White),
-                        )
-                    }
-
-                    // 前后摄切换
-                    Box(
-                        Modifier
-                            .size(44.dp)
-                            .clip(CircleShape)
-                            .background(Color(0x33FFFFFF))
-                            .border(1.dp, Color(0x55FFFFFF), CircleShape)
-                            .clickable {
-                                lensFacing = if (lensFacing == CameraSelector.LENS_FACING_BACK) {
-                                    CameraSelector.LENS_FACING_FRONT
-                                } else {
-                                    CameraSelector.LENS_FACING_BACK
-                                }
-                                imageCapture = null
-                            },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Cameraswitch,
-                            contentDescription = "切换前后摄像头",
-                            tint = Color.White,
-                            modifier = Modifier.size(24.dp),
-                        )
                     }
                 }
             }
@@ -798,15 +815,15 @@ fun PhotoCameraScreen(
                 Box(
                     Modifier
                         .align(Alignment.Center)
-                        .padding(horizontal = 28.dp)
-                        .clip(RoundedCornerShape(12.dp))
+                        .padding(horizontal = Space.x8)
+                        .clip(Radius.mdShape)
                         .background(Color(0xCC000000))
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                        .padding(horizontal = Space.x4, vertical = Space.x2),
                 ) {
                     Text(
                         text = "相机启动失败：$err",
                         color = WColors.Warning,
-                        fontSize = 12.sp,
+                        style = MaterialTheme.typography.bodySmall,
                     )
                 }
             }
@@ -833,17 +850,15 @@ fun PhotoCameraScreen(
                 Text(
                     text = "备注地点 / 标题",
                     color = WColors.OnBg,
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.SemiBold,
+                    style = MaterialTheme.typography.titleMedium,
                 )
             },
             text = {
-                OutlinedTextField(
+                GlassTextField(
                     value = noteInput,
                     onValueChange = { noteInput = it.take(40) },
+                    placeholder = "例如：十号楼四层西侧水房",
                     singleLine = true,
-                    placeholder = { Text("例如：十号楼四层西侧水房", color = WColors.OnBgDim, fontSize = 13.sp) },
-                    modifier = Modifier.fillMaxWidth(),
                 )
             },
             confirmButton = {
@@ -875,13 +890,18 @@ private fun WatermarkBlock(
     modifier: Modifier = Modifier,
     onEditTitle: () -> Unit,
 ) {
-    Column(modifier) {
+    Column(
+        modifier = modifier
+            .clip(Radius.lgShape)
+            .background(Color(0x66000000))
+            .padding(Space.x4),
+    ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
-                .clip(RoundedCornerShape(6.dp))
+                .clip(Radius.smShape)
                 .clickable { onEditTitle() }
-                .padding(vertical = 2.dp),
+                .padding(vertical = Space.x1),
         ) {
             Text(
                 text = spec.title,
@@ -894,7 +914,7 @@ private fun WatermarkBlock(
                 style = WmShadowStyle,
                 modifier = Modifier.widthIn(max = 300.dp),
             )
-            Spacer(Modifier.width(6.dp))
+            Spacer(Modifier.width(Space.x2))
             Icon(
                 imageVector = Icons.Rounded.Edit,
                 contentDescription = "编辑备注",
@@ -902,7 +922,7 @@ private fun WatermarkBlock(
                 modifier = Modifier.size(13.dp),
             )
         }
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(Space.x2))
 
         // 第二行：超大时间 + 竖直分隔线 + 日期 / 星期天气
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -915,14 +935,14 @@ private fun WatermarkBlock(
                 letterSpacing = (-1).sp,
                 style = WmShadowStyle,
             )
-            Spacer(Modifier.width(10.dp))
+            Spacer(Modifier.width(Space.x2))
             Box(
                 Modifier
                     .width(2.dp)
                     .height(34.dp)
                     .background(Color.White.copy(alpha = 0.3f)),
             )
-            Spacer(Modifier.width(10.dp))
+            Spacer(Modifier.width(Space.x2))
             Column {
                 Text(
                     text = spec.date,
@@ -940,7 +960,7 @@ private fun WatermarkBlock(
                 )
             }
         }
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(Space.x1))
 
         // 地址
         Text(
@@ -952,7 +972,7 @@ private fun WatermarkBlock(
             overflow = TextOverflow.Ellipsis,
             style = WmShadowStyle,
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(Space.x2))
 
         // 蜂窝技术块（CellWatermark.flatLines 原样输出）
         Text(
@@ -962,7 +982,7 @@ private fun WatermarkBlock(
             lineHeight = 13.sp,
             style = WmShadowStyle,
         )
-        Spacer(Modifier.height(3.dp))
+        Spacer(Modifier.height(Space.x1))
         spec.cellLines.forEach { line ->
             Text(
                 text = line,
@@ -974,7 +994,7 @@ private fun WatermarkBlock(
             )
         }
         if (!spec.hasFix) {
-            Spacer(Modifier.height(3.dp))
+            Spacer(Modifier.height(Space.x1))
             Text(
                 text = WM_NO_FIX,
                 color = Color(0xFFFBBF24),
@@ -994,7 +1014,7 @@ private fun PermissionDenied(onRequest: () -> Unit, onClose: () -> Unit) {
         contentAlignment = Alignment.Center,
     ) {
         Column(
-            modifier = Modifier.padding(32.dp),
+            modifier = Modifier.padding(Space.x8),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
@@ -1002,16 +1022,16 @@ private fun PermissionDenied(onRequest: () -> Unit, onClose: () -> Unit) {
                 style = MaterialTheme.typography.titleMedium,
                 color = WColors.OnBg,
             )
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(Space.x3))
             Text(
                 text = "照片只保存在本机，不会上传",
                 style = MaterialTheme.typography.bodySmall,
                 color = WColors.OnBgDim,
             )
-            Spacer(Modifier.height(22.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                GlassTextButton(text = "关闭", onClick = onClose)
-                GlassTextButton(text = "重新申请权限", onClick = onRequest)
+            Spacer(Modifier.height(Space.x6))
+            Row(horizontalArrangement = Arrangement.spacedBy(Space.x3)) {
+                GlowButton(text = "重新申请权限", onClick = onRequest)
+                OutlineButton(text = "关闭", onClick = onClose)
             }
         }
     }

@@ -2,8 +2,8 @@ package com.gakj.weilie.ui.map
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -15,17 +15,20 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
-import androidx.compose.material.icons.rounded.Science
+import androidx.compose.material.icons.rounded.CallMerge
+import androidx.compose.material.icons.rounded.CallSplit
+import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -35,18 +38,28 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.widget.Toast
+
 import com.gakj.weilie.core.model.SampleRecord
 import com.gakj.weilie.core.sampling.CellChangeEvent
 import com.gakj.weilie.core.telephony.CellSnapshot
 import com.gakj.weilie.ui.expert.ExpertPanelContent
-import com.gakj.weilie.ui.theme.GlassCard
+import com.gakj.weilie.ui.theme.Hairline.hairline
 import com.gakj.weilie.ui.theme.MonoText
 import com.gakj.weilie.ui.theme.PulsingDot
+import com.gakj.weilie.ui.theme.Radius
 import com.gakj.weilie.ui.theme.SignalBars
-import com.gakj.weilie.ui.theme.StatChip
+import com.gakj.weilie.ui.theme.Space
 import com.gakj.weilie.ui.theme.WColors
 
 /**
@@ -65,7 +78,6 @@ enum class DataSlot(val label: String) {
 
 /**
  * 追踪目标的命中态（@1 需求：主区命中 / 邻区命中 / 脱离）。
- * 显示在「追踪目标」槽位，用来区分"目标命中"与"手机自身服务小区信号"。
  */
 enum class TargetState(val label: String, private val argb: Long) {
     HIT("命中目标", 0xFF22C55E),
@@ -77,10 +89,13 @@ enum class TargetState(val label: String, private val argb: Long) {
 }
 
 /**
- * 顶部悬浮数据栏（STRICT_SPEC 2.1）：
- * 上下两半槽位（点按切换指标）+ 整体显示合并开关 + 专家/普通切换 + 展开/收起；
- * 普通模式：运营商/制式、已连接基站（可折叠全文）、五格信号+评级、附近基站列表、切基站白话提示；
- * 专家模式：复用 ExpertPanelContent 全量字段 + 切换时间线。
+ * 顶部数据栏。
+ *
+ * 视觉规则（与全 App 一套系统保持一致）：
+ * - 一块面板，内部用发丝分隔线分段，不再嵌套第二层卡片；
+ * - 标签一列（固定宽度）、数值一列（等宽字体），左右两条边线始终对齐；
+ * - 面板底色比普通玻璃更实（地图文字会透过来，会显得脏），顶部保留一道细高光；
+ * - 主区只放「追踪目标 + 当前服务小区」两行；灵敏度信息收进展开区。
  */
 @Composable
 fun MapDataBar(
@@ -94,7 +109,7 @@ fun MapDataBar(
     wifiCount: Int,
     // RSRP 趋势曲线数据（最近采样，时间顺序；下槽 SIGNAL 时绘制）
     rsrpHistory: List<Int> = emptyList(),
-    // 双卡明细（每张卡一行，等价于 CellularZ 底部水印的信息密度；空列表则退回单条)
+    // 双卡明细（每张卡一行）
     sims: List<com.gakj.weilie.core.telephony.SimCell> = emptyList(),
     coordsText: String?,
     durationText: String,
@@ -106,7 +121,7 @@ fun MapDataBar(
     ratText: String,
     servingText: String?,
     neighborCis: List<String>,
-    /** 邻区为 0 时的原因提示（如 5G SA 下系统不提供邻区），空串不显示 */
+    /** 邻区为 0 时的原因提示，空串不显示 */
     neighborHint: String = "",
     confidenceText: String?,
     // 专家模式数据源
@@ -116,172 +131,180 @@ fun MapDataBar(
     // 切基站白话提示（null = 不显示）
     lastEventNotice: String?,
     modifier: Modifier = Modifier,
-    // 由页面级状态托管（A3「专业/简单切换」与数据栏自身 toggle 必须是同一份状态）
     expertMode: Boolean = false,
     onExpertModeChange: (Boolean) -> Unit = {},
 ) {
     var slotTop by remember { mutableStateOf(DataSlot.TARGET) }
     var slotBottom by remember { mutableStateOf(DataSlot.SIGNAL) }
     var merged by remember { mutableStateOf(false) }
-    // 默认展开：用户反馈「数据显示区默认要显示一些内容」，收起态只留一行摘要
     var expanded by remember { mutableStateOf(true) }
     var pickingSlot by remember { mutableStateOf<DataSlot?>(null) }
     var showServingFull by remember { mutableStateOf(false) }
     var showNeighborList by remember { mutableStateOf(false) }
 
     Column(modifier) {
-        GlassCard(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp), onMap = true) {
-            Column {
-                // ---------- 收起态：一行摘要（≤56dp），点按展开 ----------
-                if (!expanded) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(Radius.lgShape)
+                .background(
+                    Brush.verticalGradient(
+                        listOf(Color(0xFF0C1220), Color(0xFF090E18)),
+                    ),
+                )
+                .border(
+                    1.dp,
+                    Brush.verticalGradient(
+                        listOf(WColors.GlassBorder, WColors.GlassBorderSoft),
+                    ),
+                    Radius.lgShape,
+                )
+                .padding(horizontal = Space.x4, vertical = Space.x3),
+        ) {
+            // ---------- 第一行：追踪目标（槽位可切换） + 展开按钮 ----------
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.weight(1f)) {
+                    SlotCell(
+                        slot = slotTop, running = running, level = level, rsrpText = rsrpText,
+                        levelLabelText = levelLabelText, sinrText = sinrText,
+                        neighborsCount = neighborsCount, wifiCount = wifiCount,
+                        coordsText = coordsText, durationText = durationText,
+                        sampleCount = sampleCount, targetText = targetText, targetState = targetState,
+                        rsrpHistory = rsrpHistory, showTrend = false, expertMode = expertMode,
+                        showPickerHint = true,
+                    ) { pickingSlot = slotTop }
+                }
+                Box(
+                    Modifier
+                        .size(28.dp)
+                        .clickable { expanded = !expanded },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                        contentDescription = if (expanded) "收起数据栏" else "展开数据栏",
+                        tint = WColors.OnBgDim,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+
+            AnimatedVisibility(expanded) {
+                Column {
+                    // ---------- 第二行：下槽位 ----------
+                    HorizontalDivider(color = WColors.GlassBorder)
+                    if (!merged) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.weight(1f)) {
+                                SlotCell(
+                                    slot = slotBottom, running = running, level = level,
+                                    rsrpText = rsrpText, levelLabelText = levelLabelText,
+                                    sinrText = sinrText, neighborsCount = neighborsCount,
+                                    wifiCount = wifiCount, coordsText = coordsText,
+                                    durationText = durationText, sampleCount = sampleCount,
+                                    targetText = targetText, targetState = targetState,
+                                    rsrpHistory = rsrpHistory, showTrend = true,
+                                    expertMode = expertMode, showPickerHint = true,
+                                ) { pickingSlot = slotBottom }
+                            }
+                        }
+                    } else {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.weight(1f)) {
+                                SlotCell(
+                                    slot = slotTop, running = running, level = level,
+                                    rsrpText = rsrpText, levelLabelText = levelLabelText,
+                                    sinrText = sinrText, neighborsCount = neighborsCount,
+                                    wifiCount = wifiCount, coordsText = coordsText,
+                                    durationText = durationText, sampleCount = sampleCount,
+                                    targetText = targetText, targetState = targetState,
+                                    rsrpHistory = rsrpHistory, showTrend = false,
+                                    expertMode = expertMode, showPickerHint = true,
+                                ) { pickingSlot = slotTop }
+                            }
+                            Box(Modifier.weight(1f)) {
+                                SlotCell(
+                                    slot = slotBottom, running = running, level = level,
+                                    rsrpText = rsrpText, levelLabelText = levelLabelText,
+                                    sinrText = sinrText, neighborsCount = neighborsCount,
+                                    wifiCount = wifiCount, coordsText = coordsText,
+                                    durationText = durationText, sampleCount = sampleCount,
+                                    targetText = targetText, targetState = targetState,
+                                    rsrpHistory = rsrpHistory, showTrend = true,
+                                    expertMode = expertMode, showPickerHint = true,
+                                ) { pickingSlot = slotBottom }
+                            }
+                        }
+                    }
+
+                    // ---------- 控制行：合并显示 / 普通·专家 ----------
                     Row(
                         Modifier
                             .fillMaxWidth()
-                            .clickable { expanded = true }
-                            .padding(horizontal = 4.dp, vertical = 9.dp),
+                            .padding(top = Space.x2, bottom = Space.x1),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        PulsingDot(if (running) WColors.Danger else Color(0xFF64748B), 8.dp)
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            "$carrierText · $ratText",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = WColors.OnBgDim,
-                        )
-                        Spacer(Modifier.width(12.dp))
-                        SignalBars(level)
-                        // 普通模式只看五格信号条 + 白话等级；专家模式才露出 dBm 数值
-                        if (expertMode) {
-                            Spacer(Modifier.width(8.dp))
-                            Text(rsrpText, style = MonoText.style.copy(fontSize = 13.sp), color = WColors.OnBg)
+                        Row(
+                            Modifier
+                                .clip(Radius.pillShape)
+                                .background(WColors.ChipBg)
+                                .clickable { merged = !merged }
+                                .padding(horizontal = 10.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                if (merged) Icons.Rounded.CallMerge else Icons.Rounded.CallSplit,
+                                contentDescription = null,
+                                tint = WColors.OnBgDim,
+                                modifier = Modifier.size(13.dp),
+                            )
+                            Spacer(Modifier.width(5.dp))
+                            Text(
+                                if (merged) "分开显示" else "合并显示",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = WColors.OnBgDim,
+                            )
                         }
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            if (level < 0) "无信号" else levelLabelText,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (level < 0) WColors.OnBgDim else Color(com.gakj.weilie.core.rating.SignalRating.colorArgb(level).toInt()),
-                        )
                         Spacer(Modifier.weight(1f))
-                        Icon(
-                            Icons.Rounded.ExpandMore,
-                            contentDescription = "展开",
-                            tint = WColors.OnBgDim,
-                            modifier = Modifier.size(18.dp),
-                        )
+                        Row(
+                            Modifier
+                                .clip(Radius.pillShape)
+                                .background(WColors.ChipBg)
+                                .padding(3.dp),
+                        ) {
+                            SegPill("普通", !expertMode, WColors.Primary) { onExpertModeChange(false) }
+                            SegPill("专家", expertMode, WColors.Secondary) { onExpertModeChange(true) }
+                        }
                     }
-                }
 
-                AnimatedVisibility(expanded) {
-                    Column {
-                // ---------- 槽位区 ----------
-                if (!merged) {
-                    SlotCell(slotTop, running, level, rsrpText, levelLabelText, sinrText,
-                        neighborsCount, wifiCount, coordsText, durationText, sampleCount, targetText, targetState,
-                        rsrpHistory = rsrpHistory, showTrend = false, expertMode = expertMode) {
-                        pickingSlot = slotTop
-                    }
                     HorizontalDivider(color = WColors.GlassBorder)
-                    SlotCell(slotBottom, running, level, rsrpText, levelLabelText, sinrText,
-                        neighborsCount, wifiCount, coordsText, durationText, sampleCount, targetText, targetState,
-                        rsrpHistory = rsrpHistory, showTrend = true, expertMode = expertMode) {
-                        pickingSlot = slotBottom
-                    }
-                } else {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.weight(1f)) {
-                            SlotCell(slotTop, running, level, rsrpText, levelLabelText, sinrText,
-                                neighborsCount, wifiCount, coordsText, durationText, sampleCount, targetText, targetState,
-                                rsrpHistory = rsrpHistory, showTrend = false, expertMode = expertMode) {
-                                pickingSlot = slotTop
-                            }
+                    Spacer(Modifier.height(Space.x2))
+                    if (expertMode) {
+                        Column(
+                            Modifier
+                                .heightIn(max = 280.dp)
+                                .verticalScroll(rememberScrollState()),
+                        ) {
+                            ExpertPanelContent(snapshot, lastSample, events)
                         }
-                        Box(Modifier.weight(1f)) {
-                            SlotCell(slotBottom, running, level, rsrpText, levelLabelText, sinrText,
-                                neighborsCount, wifiCount, coordsText, durationText, sampleCount, targetText, targetState,
-                                rsrpHistory = rsrpHistory, showTrend = true, expertMode = expertMode) {
-                                pickingSlot = slotBottom
-                            }
-                        }
-                    }
-                }
-
-                // ---------- 控制行 ----------
-                Row(
-                    Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        "整体显示",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = WColors.OnBgDim,
-                        modifier = Modifier
-                            .clickable { merged = !merged }
-                            .background(
-                                if (merged) WColors.Primary.copy(alpha = 0.08f) else Color.Transparent,
-                                RoundedCornerShape(8.dp),
-                            )
-                            .padding(horizontal = 8.dp, vertical = 4.dp),
-                    )
-                    Spacer(Modifier.weight(1f))
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .clickable { onExpertModeChange(!expertMode) }
-                            .padding(horizontal = 8.dp, vertical = 4.dp),
-                    ) {
-                        Icon(
-                            Icons.Rounded.Science,
-                            contentDescription = null,
-                            tint = if (expertMode) WColors.Secondary else WColors.OnBgDim,
-                            modifier = Modifier.size(15.dp),
+                    } else {
+                        NormalContent(
+                            carrierText = carrierText,
+                            ratText = ratText,
+                            sims = sims,
+                            servingText = servingText,
+                            showServingFull = showServingFull,
+                            onToggleServing = { showServingFull = !showServingFull },
+                            level = level,
+                            levelLabelText = levelLabelText,
+                            showSignalRow = slotTop != DataSlot.SIGNAL && slotBottom != DataSlot.SIGNAL,
+                            neighborCis = neighborCis,
+                            neighborHint = neighborHint,
+                            showNeighborList = showNeighborList,
+                            onToggleNeighbors = { showNeighborList = !showNeighborList },
+                            confidenceText = confidenceText,
+                            running = running,
                         )
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            if (expertMode) "专家" else "普通",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (expertMode) WColors.Secondary else WColors.OnBgDim,
-                        )
-                    }
-                    IconButton(onClick = { expanded = !expanded }, modifier = Modifier.size(30.dp)) {
-                        Icon(
-                            if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
-                            contentDescription = "展开/收起",
-                            tint = WColors.OnBgDim,
-                            modifier = Modifier.size(18.dp),
-                        )
-                    }
-                }
-
-                // ---------- 展开内容：普通 / 专家（外层 AnimatedVisibility 已按 expanded 条件渲染） ----------
-                        HorizontalDivider(color = WColors.GlassBorder)
-                        Spacer(Modifier.height(8.dp))
-                        if (expertMode) {
-                            Column(
-                                Modifier
-                                    .heightIn(max = 280.dp)
-                                    .verticalScroll(rememberScrollState()),
-                            ) {
-                                ExpertPanelContent(snapshot, lastSample, events)
-                            }
-                        } else {
-                            NormalContent(
-                                carrierText = carrierText,
-                                ratText = ratText,
-                                sims = sims,
-                                servingText = servingText,
-                                showServingFull = showServingFull,
-                                onToggleServing = { showServingFull = !showServingFull },
-                                level = level,
-                                levelLabelText = levelLabelText,
-                                showSignalRow = slotTop != DataSlot.SIGNAL && slotBottom != DataSlot.SIGNAL,
-                                neighborCis = neighborCis,
-                                neighborHint = neighborHint,
-                                showNeighborList = showNeighborList,
-                                onToggleNeighbors = { showNeighborList = !showNeighborList },
-                                confidenceText = confidenceText,
-                                running = running,
-                            )
-                        }
                     }
                 }
             }
@@ -292,8 +315,14 @@ fun MapDataBar(
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .padding(top = 6.dp)
-                    .background(WColors.Bg1.copy(alpha = 0.92f), RoundedCornerShape(999.dp))
+                    .padding(top = Space.x2)
+                    .clip(Radius.mdShape)
+                    .background(
+                        Brush.verticalGradient(listOf(Color(0xFF0C1220), Color(0xFF090E18))),
+                        Radius.mdShape,
+                    )
+                    .hairline(Radius.mdShape)
+                    .hairline(Radius.pillShape)
                     .padding(horizontal = 14.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -303,18 +332,18 @@ fun MapDataBar(
                     lastEventNotice ?: "",
                     style = MaterialTheme.typography.labelMedium,
                     color = WColors.OnBg,
-                    maxLines = 1,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
     }
 
-    // ---------- 槽位指标选择弹层 ----------
-    pickingSlot?.let { target ->
+    pickingSlot?.let { slot ->
         SlotPicker(
-            current = target,
+            current = slot,
             onPick = { picked ->
-                if (target == slotTop) slotTop = picked else slotBottom = picked
+                if (slot == slotTop) slotTop = picked else slotBottom = picked
                 pickingSlot = null
             },
             onDismiss = { pickingSlot = null },
@@ -322,7 +351,25 @@ fun MapDataBar(
     }
 }
 
-/** 单个槽位：label + 值，点按弹出指标选择；showTrend=true 时 SIGNAL 绘制趋势曲线 */
+/** 分段控件单格：选中时实心 tint 底 + OnPrimary 字，未选中透明 + 次色字 */
+@Composable
+private fun SegPill(text: String, selected: Boolean, tint: Color, onClick: () -> Unit) {
+    Text(
+        text,
+        style = MaterialTheme.typography.labelSmall,
+        color = if (selected) WColors.OnPrimary else WColors.OnBgDim,
+        modifier = Modifier
+            .clip(Radius.pillShape)
+            .background(if (selected) tint else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 5.dp),
+    )
+}
+
+/**
+ * 单槽：标签 + 数值。
+ * 第一槽承载「追踪目标」，第二槽默认「服务小区信号」（trend 曲线）。
+ */
 @Composable
 private fun SlotCell(
     slot: DataSlot,
@@ -340,23 +387,34 @@ private fun SlotCell(
     targetState: TargetState,
     rsrpHistory: List<Int>,
     showTrend: Boolean,
-    expertMode: Boolean = true,
+    expertMode: Boolean,
+    showPickerHint: Boolean,
     onClick: () -> Unit,
 ) {
     Row(
         Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(vertical = 5.dp, horizontal = 2.dp),
+            .padding(vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        PulsingDot(if (running) WColors.Danger else Color(0xFF64748B), 8.dp)
+        PulsingDot(if (running) WColors.Primary else Color(0xFF64748B), 7.dp)
         Spacer(Modifier.width(8.dp))
-        Text(slot.label, style = MaterialTheme.typography.labelSmall, color = WColors.OnBgDim)
-        Spacer(Modifier.width(10.dp))
+        Text(
+            slot.label,
+            style = MaterialTheme.typography.labelSmall,
+            color = WColors.OnBgDim,
+            modifier = Modifier.width(76.dp),
+        )
         when (slot) {
             DataSlot.TARGET -> {
-                SlotValue(targetText)
+                Text(
+                    targetText,
+                    style = MonoText.style.copy(fontSize = 14.sp, fontWeight = FontWeight.Medium),
+                    color = WColors.OnBg,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
                 Spacer(Modifier.width(8.dp))
                 Text(
                     targetState.label,
@@ -366,42 +424,46 @@ private fun SlotCell(
             }
             DataSlot.SIGNAL -> {
                 if (showTrend) {
-                    // 下槽 SIGNAL：趋势曲线（Basement.md：下半=信号趋势），替代静态信号条避免重复
                     SignalTrend(rsrpHistory, Modifier.weight(1f), showScale = expertMode)
                 } else {
                     SignalBars(level)
-                    // 普通模式不露 dBm，只给白话等级；专家模式才显示原始数值
-                    if (expertMode) SlotValue(rsrpText)
+                    if (expertMode) {
+                        Spacer(Modifier.width(8.dp))
+                        Text(rsrpText, style = MonoText.style.copy(fontSize = 13.sp), color = WColors.OnBg)
+                    }
                     Spacer(Modifier.width(6.dp))
                     Text(
                         levelLabelText,
                         style = MaterialTheme.typography.labelSmall,
-                        color = if (level < 0) WColors.OnBgDim else Color(com.gakj.weilie.core.rating.SignalRating.colorArgb(level).toInt()),
+                        color = if (level < 0) WColors.OnBgDim
+                        else Color(com.gakj.weilie.core.rating.SignalRating.colorArgb(level).toInt()),
                     )
                 }
             }
-            DataSlot.SINR -> SlotValue(sinrText)
-            DataSlot.NEIGHBORS -> SlotValue("$neighborsCount 个")
-            DataSlot.WIFI -> SlotValue("$wifiCount 个")
-            DataSlot.COORDS -> SlotValue(coordsText ?: "—")
-            DataSlot.DURATION -> SlotValue(durationText)
-            DataSlot.SAMPLES -> SlotValue("$sampleCount 点")
+            DataSlot.SINR -> Text(sinrText, style = MonoText.style, color = WColors.OnBg)
+            DataSlot.NEIGHBORS -> Text("$neighborsCount 个", style = MonoText.style, color = WColors.OnBg)
+            DataSlot.WIFI -> Text("$wifiCount 个", style = MonoText.style, color = WColors.OnBg)
+            DataSlot.COORDS -> Text(coordsText ?: "—", style = MonoText.style.copy(fontSize = 12.sp), color = WColors.OnBg)
+            DataSlot.DURATION -> Text(durationText, style = MonoText.style, color = WColors.OnBg)
+            DataSlot.SAMPLES -> Text("$sampleCount 点", style = MonoText.style, color = WColors.OnBg)
         }
-        if (!(showTrend && slot == DataSlot.SIGNAL)) {
-            Spacer(Modifier.weight(1f))
-            Text("切换", style = MaterialTheme.typography.labelSmall, color = WColors.OnBgDim.copy(alpha = 0.6f))
+        if (showPickerHint) {
+            // 趋势折线自己吃 weight(1f)；再叠一个 weight 的间隔会把可用宽度对半分，
+            // 于是「追踪目标」这种长值只显示前半截（NCI 后的编号被裁掉）。
+            val hasWeightedChild = slot == DataSlot.SIGNAL && showTrend
+            if (hasWeightedChild) {
+                Spacer(Modifier.width(8.dp))
+            } else {
+                Spacer(Modifier.weight(1f))
+            }
+            Icon(
+                Icons.Rounded.SwapHoriz,
+                contentDescription = "切换该行显示的指标",
+                tint = WColors.OnBgDim.copy(alpha = 0.55f),
+                modifier = Modifier.size(14.dp),
+            )
         }
     }
-}
-
-@Composable
-private fun SlotValue(text: String) {
-    Text(
-        text,
-        style = MonoText.style.copy(fontSize = 14.sp),
-        color = WColors.OnBg,
-        maxLines = 1,
-    )
 }
 
 /** 指标选择菜单 */
@@ -433,7 +495,10 @@ private fun SlotPicker(
     }
 }
 
-/** 普通模式展开内容：白话优先；showSignalRow=false 时信号条与槽位重复，不再重复渲染 */
+/**
+ * 普通模式展开内容（白话优先）：
+ * 服务小区一行 → 双卡明细 → 已连接基站（可展开）→ 附近基站（可展开）→ 拟合置信度。
+ */
 @Composable
 private fun NormalContent(
     carrierText: String,
@@ -453,117 +518,112 @@ private fun NormalContent(
     running: Boolean,
 ) {
     Column {
-        // 双卡逐行明细：卡号 · 运营商 · 制式频段 · 小区编号(习惯写法) · RSRP · SINR
-        // 参考 CellularZ 底部水印的信息密度 —— 打开数据栏就能看到每张卡当前挂在哪个小区。
-        if (sims.isNotEmpty()) {
-            sims.forEach { s ->
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        s.slotLabel,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = WColors.OnBgDim,
-                        modifier = Modifier.width(30.dp),
-                    )
-                    Text(
-                        "${s.carrier} ${s.ratBand}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = WColors.OnBg,
-                        maxLines = 1,
-                        modifier = Modifier.width(96.dp),
-                    )
-                    Text(
-                        s.cellIdText,
-                        style = MonoText.style.copy(fontSize = 11.sp),
-                        color = WColors.Primary,
-                        maxLines = 1,
-                        modifier = Modifier.weight(1f),
-                    )
-                    // 普通模式：只给五格条 + 白话等级（不露 dBm / SINR 数字；要数字切专家模式）
-                    val simLevel = com.gakj.weilie.core.rating.SignalRating.level(s.rsrp)
-                    SignalBars(simLevel)
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        if (simLevel < 0) "无信号"
-                        else com.gakj.weilie.core.rating.SignalRating.label(simLevel),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (simLevel < 0) WColors.OnBgDim
-                        else Color(com.gakj.weilie.core.rating.SignalRating.colorArgb(simLevel).toInt()),
-                        maxLines = 1,
-                    )
-                }
-            }
-            HorizontalDivider(color = WColors.GlassBorder)
-            Spacer(Modifier.height(6.dp))
-        }
-        Text(
-            "$carrierText · $ratText",
-            style = MaterialTheme.typography.labelSmall,
-            color = WColors.OnBgDim,
-        )
-        Spacer(Modifier.height(6.dp))
-
-        // 已连接基站（点按折叠全文）
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable(onClick = onToggleServing)
-                .padding(vertical = 4.dp),
-        ) {
-            PulsingDot(if (running) WColors.Success else Color(0xFF64748B), 7.dp)
-            Spacer(Modifier.width(8.dp))
-            Column {
+        // 网络归属：有双卡明细时由每张卡自己交代（避免同一信息出现两遍）
+        if (sims.isEmpty()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    if (servingText != null) "已连接基站 · 点按${if (showServingFull) "收起" else "查看详情"}" else "未连接基站",
+                    "网络",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = WColors.OnBgDim,
+                    modifier = Modifier.width(76.dp),
+                )
+                Text(
+                    "$carrierText · $ratText",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = WColors.OnBg,
+                )
+            }
+        } else {
+            Spacer(Modifier.height(Space.x1))
+            sims.forEach { s ->
+                SimRow(s)
+            }
+        }
+
+        if (showSignalRow) {
+            Spacer(Modifier.height(Space.x2))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "信号",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = WColors.OnBgDim,
+                    modifier = Modifier.width(76.dp),
+                )
+                SignalBars(level)
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (level < 0) "无信号" else "信号$levelLabelText",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (level < 0) WColors.OnBgDim
+                    else Color(com.gakj.weilie.core.rating.SignalRating.colorArgb(level).toInt()),
+                )
+            }
+        }
+
+        Spacer(Modifier.height(Space.x2))
+        // 已连接基站（点按展开全文）
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(Radius.smShape)
+                .clickable(onClick = onToggleServing)
+                .padding(vertical = 2.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                PulsingDot(if (running) WColors.Success else Color(0xFF64748B), 6.dp)
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    if (servingText != null) "已连接基站" else "未连接基站",
                     style = MaterialTheme.typography.labelSmall,
                     color = WColors.OnBgDim,
                 )
-                if (servingText != null && showServingFull) {
-                    Text(
-                        servingText,
-                        style = MonoText.style,
-                        color = WColors.OnBg,
-                        modifier = Modifier.padding(top = 2.dp),
-                    )
-                }
-            }
-        }
-        Spacer(Modifier.height(6.dp))
-
-        // 五格信号 + 评级文字（仅当上下槽均未选「信号强度」时显示，避免与槽位重复）
-        if (showSignalRow) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                SignalBars(level)
-                Spacer(Modifier.width(10.dp))
+                Spacer(Modifier.weight(1f))
                 Text(
-                    if (level < 0) "无信号" else "信号${levelLabelText}",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = if (level < 0) WColors.OnBgDim else Color(com.gakj.weilie.core.rating.SignalRating.colorArgb(level).toInt()),
+                    if (servingText != null) (if (showServingFull) "收起" else "详情") else "",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = WColors.Primary,
                 )
             }
-            Spacer(Modifier.height(8.dp))
+            if (servingText != null && showServingFull) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    servingText,
+                    style = MonoText.style.copy(fontSize = 12.sp),
+                    color = WColors.OnBg,
+                )
+            }
         }
 
-        // 附近基站
-        Text(
-            "附近还有 ${neighborCis.size} 个基站" + if (neighborCis.isEmpty()) "" else " · 点按查看",
-            style = MaterialTheme.typography.labelMedium,
-            color = WColors.Primary,
-            modifier = Modifier.clickable(onClick = onToggleNeighbors),
-        )
+        Spacer(Modifier.height(Space.x1))
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clip(Radius.smShape)
+                .clickable(onClick = onToggleNeighbors)
+                .padding(vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "附近还有 ${neighborCis.size} 个基站",
+                style = MaterialTheme.typography.labelMedium,
+                color = WColors.Primary,
+            )
+            if (neighborCis.isNotEmpty()) {
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    if (showNeighborList) "收起" else "查看",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = WColors.OnBgDim,
+                )
+            }
+        }
         AnimatedVisibility(showNeighborList && neighborCis.isNotEmpty()) {
             Column(Modifier.padding(top = 4.dp)) {
                 neighborCis.take(8).forEach { ci ->
-                    Text("· $ci", style = MonoText.style, color = WColors.OnBgDim)
+                    Text("· $ci", style = MonoText.style.copy(fontSize = 12.sp), color = WColors.OnBgDim)
                 }
             }
         }
-        // 邻区为 0 这类「系统给不了」的情况，写清原因，别让用户以为是 App 坏了
         if (neighborCis.isEmpty() && neighborHint.isNotBlank()) {
             Text(
                 neighborHint,
@@ -574,12 +634,98 @@ private fun NormalContent(
         }
 
         if (confidenceText != null) {
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(Space.x2))
+            HorizontalDivider(color = WColors.GlassBorder)
+            Spacer(Modifier.height(Space.x2))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "拟合置信度",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = WColors.OnBgDim,
+                    modifier = Modifier.width(76.dp),
+                )
+                Text(
+                    confidenceText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = WColors.OnBg,
+                )
+            }
+        }
+    }
+}
+
+/** 一张 SIM 卡：上行给「卡号 · 运营商 频段」+ 信号评级，下行给小区编号（等宽） */
+@Composable
+private fun SimRow(s: com.gakj.weilie.core.telephony.SimCell) {
+    val simLevel = com.gakj.weilie.core.rating.SignalRating.level(s.rsrp)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            s.slotLabel,
+            style = MaterialTheme.typography.labelSmall,
+            color = WColors.OnBgDim,
+            modifier = Modifier.width(76.dp),
+        )
+        Column(Modifier.weight(1f)) {
             Text(
-                "拟合置信度：$confidenceText",
+                "${s.carrier} ${s.ratBand}",
+                style = MaterialTheme.typography.bodySmall,
+                color = WColors.OnBg,
+                maxLines = 1,
+            )
+            Spacer(Modifier.height(1.dp))
+            Text(
+                s.cellIdText,
+                style = MonoText.style.copy(fontSize = 11.sp),
+                color = WColors.Primary,
+                maxLines = 1,
+            )
+        }
+        val ctx = LocalContext.current
+        val clipboard = LocalClipboardManager.current
+        Box(
+            Modifier
+                .size(28.dp)
+                .clip(CircleShape)
+                .clickable {
+                    clipboard.setText(AnnotatedString(cellCopyText(s)))
+                    Toast.makeText(ctx, "已复制基站信息", Toast.LENGTH_SHORT).show()
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Rounded.ContentCopy,
+                contentDescription = "复制基站信息",
+                tint = WColors.OnBgDim,
+                modifier = Modifier.size(15.dp),
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        Column(horizontalAlignment = Alignment.End) {
+            SignalBars(simLevel)
+            Spacer(Modifier.height(2.dp))
+            Text(
+                if (simLevel < 0) "无信号" else com.gakj.weilie.core.rating.SignalRating.label(simLevel),
                 style = MaterialTheme.typography.labelSmall,
-                color = WColors.OnBgDim,
+                color = if (simLevel < 0) WColors.OnBgDim
+                else Color(com.gakj.weilie.core.rating.SignalRating.colorArgb(simLevel).toInt()),
+                maxLines = 1,
             )
         }
     }
+}
+
+/** 复制给外勤/内勤转发用的基站信息：一行内给出运营商、制式、小区编号与关键参数 */
+private fun cellCopyText(s: com.gakj.weilie.core.telephony.SimCell): String {
+    val parts = mutableListOf("${s.carrier} ${s.ratBand}".trim())
+    if (s.mccMnc.isNotBlank()) parts += s.mccMnc
+    parts += s.cellIdText
+    if (s.pci > 0) parts += "PCI ${s.pci}"
+    if (s.arfcn > 0) parts += "ARFCN ${s.arfcn}"
+    if (s.rsrp != com.gakj.weilie.core.telephony.SimCell.UNKNOWN) parts += "RSRP ${s.rsrp} dBm"
+    return parts.joinToString(" · ")
 }

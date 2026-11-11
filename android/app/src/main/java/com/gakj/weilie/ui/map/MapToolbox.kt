@@ -79,7 +79,10 @@ import androidx.compose.ui.unit.sp
 import kotlin.math.roundToInt
 import com.gakj.weilie.ui.common.HelpHint
 import com.gakj.weilie.ui.common.HelpTexts
+import com.gakj.weilie.ui.theme.Hairline.hairline
 import com.gakj.weilie.ui.theme.MonoText
+import com.gakj.weilie.ui.theme.Radius
+import com.gakj.weilie.ui.theme.Space
 import com.gakj.weilie.ui.theme.SectionHeader
 import com.gakj.weilie.ui.theme.WColors
 import com.gakj.weilie.ui.theme.glass
@@ -166,11 +169,12 @@ fun ToolboxSheet(
     // 直接展开到最高高度：A1/A2/A3 + A4 十工具一屏尽量都露出，避免首屏只见半截图标
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     // 用户要求：工具箱最多占屏幕 2/5，不要铺满全屏（内容超出时在面板内滚动）
-    val maxSheetH = (LocalConfiguration.current.screenHeightDp * 0.32f).dp
+    val maxSheetH = (LocalConfiguration.current.screenHeightDp * 0.42f).dp
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = sheetBg,
+        shape = RoundedCornerShape(topStart = Radius.xl, topEnd = Radius.xl),
         scrimColor = if (dimmed) Color.Transparent else Color(0x52000000),
     ) {
         Column(
@@ -179,8 +183,8 @@ fun ToolboxSheet(
                 .alpha(sheetAlpha)
                 .heightIn(max = maxSheetH)
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp)
-                .padding(bottom = 12.dp),
+                .padding(horizontal = Space.screenH)
+                .padding(bottom = Space.x3),
         ) {
             var a3Open by remember { mutableStateOf(false) }
             // 默认展开：用户反馈「工具箱的数据显示区默认要显示一些内容」
@@ -225,31 +229,27 @@ fun ToolboxSheet(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 8.dp)
-                        .background(WColors.ChipBg, RoundedCornerShape(10.dp))
-                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                        .padding(top = Space.x2)
+                        .background(WColors.ChipBg, Radius.pillShape)
+                        .padding(horizontal = Space.x3, vertical = 6.dp),
                 )
             }
 
-            // ---------- 静默跟踪（需求 10）+ 打点间隔（需求 1）----------
+            // ---------- 静默跟踪（需求 10）----------
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .padding(top = 8.dp)
-                    .background(WColors.ChipBg, RoundedCornerShape(12.dp))
-                    .padding(start = 12.dp, end = 8.dp, top = 4.dp, bottom = 4.dp),
+                    .padding(top = Space.x2)
+                    .background(WColors.ChipBg, Radius.mdShape)
+                    .padding(start = Space.x3, end = Space.x2, top = Space.x2, bottom = Space.x2),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            "静默跟踪",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = if (silent) WColors.Primary else WColors.OnBg,
-                        )
-                        Spacer(Modifier.width(5.dp))
-                        HelpHint("振动逻辑说明", HelpTexts.silentTrack)
-                    }
+                    Text(
+                        "静默跟踪",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (silent) WColors.Primary else WColors.OnBg,
+                    )
                     Text(
                         if (silent) silentStateText
                         else if (!silentAvailable) "经纬度任务无法判定命中态"
@@ -258,19 +258,46 @@ fun ToolboxSheet(
                         color = if (silent) WColors.Primary else WColors.OnBgDim,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 2.dp),
                     )
                 }
-                listOf(1_000L to "1s", 2_000L to "2s", 5_000L to "5s").forEach { (ms, label) ->
+                HelpHint("振动逻辑说明", HelpTexts.silentTrack)
+                Spacer(Modifier.width(Space.x2))
+                Switch(
+                    checked = silent,
+                    onCheckedChange = if (silentAvailable) onSilent else null,
+                    enabled = silentAvailable,
+                    colors = SwitchDefaults.colors(
+                            checkedThumbColor = WColors.OnPrimary,
+                            checkedTrackColor = WColors.Primary,
+                            uncheckedThumbColor = WColors.OnBgDim,
+                            uncheckedTrackColor = WColors.BarOff,
+                            uncheckedBorderColor = WColors.GlassBorder,
+                        ),
+                    modifier = Modifier.height(26.dp),
+                )
+            }
+
+            // ---------- 打点间隔（需求 1）----------
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = Space.x2, start = Space.x2),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("打点间隔", style = MaterialTheme.typography.labelSmall, color = WColors.OnBgDim)
+                Spacer(Modifier.width(Space.x3))
+                listOf(1_000L to "1 s", 2_000L to "2 s", 5_000L to "5 s").forEach { (ms, label) ->
                     val on = sampleIntervalMs == ms
                     Box(
                         Modifier
-                            .padding(end = 4.dp)
+                            .padding(end = Space.x2)
                             .background(
-                                if (on) WColors.Primary.copy(alpha = 0.18f) else Color.Transparent,
-                                RoundedCornerShape(8.dp),
+                                if (on) WColors.Primary.copy(alpha = 0.16f) else Color.Transparent,
+                                Radius.pillShape,
                             )
                             .clickable { onSampleInterval(ms) }
-                            .padding(horizontal = 7.dp, vertical = 3.dp),
+                            .padding(horizontal = Space.x3, vertical = 4.dp),
                     ) {
                         Text(
                             label,
@@ -279,13 +306,6 @@ fun ToolboxSheet(
                         )
                     }
                 }
-                Switch(
-                    checked = silent,
-                    onCheckedChange = if (silentAvailable) onSilent else null,
-                    enabled = silentAvailable,
-                    colors = SwitchDefaults.colors(checkedTrackColor = WColors.Primary),
-                    modifier = Modifier.height(26.dp),
-                )
             }
 
             // 需求四：振动强度可调（1 轻 / 3 中 / 5 强），立即生效并记住
@@ -330,9 +350,10 @@ fun ToolboxSheet(
                 Column(
                     Modifier
                         .fillMaxWidth()
-                        .padding(top = 8.dp)
-                        .mapGlass(RoundedCornerShape(18.dp))
-                        .padding(12.dp),
+                        .padding(top = Space.x2)
+                        .background(WColors.Bg1, Radius.lgShape)
+                        .hairline(Radius.lgShape)
+                        .padding(Space.x3),
                 ) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         A3Chip("上下两半", a2Scheme == 0) { a2Scheme = 0 }
@@ -386,8 +407,9 @@ fun ToolboxSheet(
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .mapGlass(RoundedCornerShape(24.dp))
-                    .padding(8.dp),
+                    .background(WColors.Bg1, Radius.lgShape)
+                    .hairline(Radius.lgShape)
+                    .padding(Space.x2),
             ) {
                 if (inlineTool == null) {
                     SectionHeader(
@@ -454,18 +476,19 @@ private fun SquareTile(
 ) {
     Column(
         modifier
-            .height(66.dp)
+            .height(62.dp)
             .background(
-                if (selected) WColors.Primary.copy(alpha = 0.20f) else WColors.ChipBg,
-                RoundedCornerShape(14.dp),
+                if (selected) WColors.Primary.copy(alpha = 0.16f) else WColors.ChipBg,
+                Radius.mdShape,
             )
+            .hairline(Radius.mdShape, strong = selected)
             .clickable(onClick = onClick)
             .padding(vertical = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Icon(icon, label, tint = if (selected) WColors.Primary else tint, modifier = Modifier.size(21.dp))
-        Spacer(Modifier.height(6.dp))
+        Icon(icon, label, tint = if (selected) WColors.Primary else tint, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.height(Space.x1))
         Text(
             label,
             style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
@@ -481,9 +504,12 @@ private fun RowScope.A3Chip(text: String, selected: Boolean, onClick: () -> Unit
     Box(
         Modifier
             .weight(1f)
-            .mapGlass(RoundedCornerShape(12.dp))
+            .background(
+                if (selected) WColors.Primary.copy(alpha = 0.16f) else WColors.ChipBg,
+                Radius.pillShape,
+            )
             .clickable(onClick = onClick)
-            .padding(vertical = 8.dp),
+            .padding(vertical = 7.dp),
         contentAlignment = Alignment.Center,
     ) {
         Text(
@@ -513,15 +539,16 @@ private fun ToolCell(
     // 本格子在窗口中的原点（把相对手势坐标换算成全屏坐标用）
     var origin by remember { mutableStateOf(Offset.Zero) }
     var lastPos by remember { mutableStateOf(Offset.Zero) }
-    Box(Modifier.padding(4.dp)) {
+    Box(Modifier.padding(2.dp)) {
         Column(
             Modifier
                 .fillMaxWidth()
-                .height(72.dp)
+                .height(64.dp)
                 .background(
-                    if (toggled) WColors.Primary.copy(alpha = 0.20f) else WColors.ChipBg,
-                    RoundedCornerShape(14.dp),
+                    if (toggled) WColors.Primary.copy(alpha = 0.16f) else WColors.ChipBg,
+                    Radius.mdShape,
                 )
+                .hairline(Radius.mdShape, strong = toggled)
                 .onGloballyPositioned { origin = it.positionInRoot() }
                 .pointerInput(tool) {
                     detectDragGesturesAfterLongPress(
@@ -546,8 +573,8 @@ private fun ToolCell(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
-            Icon(toolIcon(tool), null, tint = onColor, modifier = Modifier.size(21.dp))
-            Spacer(Modifier.height(6.dp))
+            Icon(toolIcon(tool), null, tint = onColor, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.height(Space.x1))
             Text(
                 tool.label,
                 style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
@@ -602,7 +629,17 @@ private fun ToggleBlock(title: String, desc: String, checked: Boolean, onChange:
             Text(title, style = MaterialTheme.typography.titleSmall, color = WColors.OnBg)
             Text(desc, style = MaterialTheme.typography.labelSmall, color = WColors.OnBgDim)
         }
-        Switch(checked = checked, onCheckedChange = onChange, colors = SwitchDefaults.colors(checkedTrackColor = WColors.Primary))
+        Switch(
+        checked = checked,
+        onCheckedChange = onChange,
+        colors = SwitchDefaults.colors(
+            checkedThumbColor = WColors.OnPrimary,
+            checkedTrackColor = WColors.Primary,
+            uncheckedThumbColor = WColors.OnBgDim,
+            uncheckedTrackColor = WColors.BarOff,
+            uncheckedBorderColor = WColors.GlassBorder,
+        ),
+    )
     }
 }
 

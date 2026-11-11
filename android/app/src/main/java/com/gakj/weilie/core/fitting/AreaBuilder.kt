@@ -76,15 +76,18 @@ object AreaBuilder {
     fun build(samples: List<SampleRecord>, opt: Options = Options()): Result {
         // 先剔除飞点 / (0,0) / 粗定位点：一个飞点就能把面撑到城市尺度（真机反馈过「一大片异常覆盖」）
         val sane = TrackSanity.saneSamples(samples)
+        // 只有「命中目标」的点才算实测覆盖：主区命中，或邻区命中且目标信号达标。
+        // 脱离目标的轨迹（OUT）只画线、不进面积 —— 真机反馈过「未命中还在铺模拟区域」。
+        val valid = sane.filter { isValidPoint(it, opt.rsrpFloorDbm) }
         if (opt.mode == Mode.SIMULATED) {
+            if (valid.size < 2) return Result(Kind.NONE, emptyList(), valid.size)
             val sim = TrackBufferArea.build(
-                sane,
+                valid,
                 TrackBufferArea.Options(radiusM = opt.bufferRadiusM, shape = opt.bufferShape),
-            ) ?: return Result(Kind.NONE, emptyList(), sane.size)
+            ) ?: return Result(Kind.NONE, emptyList(), valid.size)
             return Result(Kind.SIMULATED, sim.ringLatLon, sim.pointCount, areaM2 = sim.areaM2)
         }
 
-        val valid = sane.filter { isValidPoint(it, opt.rsrpFloorDbm) }
         if (valid.size < 2) return Result(Kind.NONE, emptyList(), valid.size)
 
         val meanAcc = valid.mapNotNull { it.accuracyM?.toDouble() }

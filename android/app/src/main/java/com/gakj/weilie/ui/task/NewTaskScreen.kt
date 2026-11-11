@@ -1,5 +1,10 @@
 package com.gakj.weilie.ui.task
 
+import android.Manifest
+import android.content.Context
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -35,6 +40,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,10 +48,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import com.gakj.weilie.core.model.CoverageTask
 import com.gakj.weilie.core.model.TargetCell
 import com.gakj.weilie.core.model.TargetFormat
 import com.gakj.weilie.core.parsing.TaskInputParser
+import com.gakj.weilie.core.telephony.AndroidCellReader
+import com.gakj.weilie.core.telephony.CellSnapshot
+import com.gakj.weilie.core.telephony.CellTargetShortcut
 import com.gakj.weilie.ui.AppGraph
 import com.gakj.weilie.ui.common.GlassTextButton
 import com.gakj.weilie.ui.common.GlassTextField
@@ -58,13 +68,19 @@ import com.gakj.weilie.ui.common.toast
 import com.gakj.weilie.ui.theme.GlassCard
 import com.gakj.weilie.ui.theme.GlowButton
 import com.gakj.weilie.ui.theme.MonoText
+import com.gakj.weilie.ui.theme.OutlineButton
 import com.gakj.weilie.ui.theme.SectionHeader
+import com.gakj.weilie.ui.theme.Space
 import com.gakj.weilie.ui.theme.StatChip
 import com.gakj.weilie.ui.theme.WColors
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 新建走测任务：
@@ -89,6 +105,43 @@ fun NewTaskScreen(onBack: () -> Unit, onCreated: (String) -> Unit) {
     var saved by remember { mutableStateOf<List<String>>(emptyList()) }
     var selectedIdx by remember { mutableIntStateOf(-1) }
     remember { saveSavedTargets(emptyList()) }
+
+    // 「用本机当前基站」：一键把当前驻留小区填成目标。
+    // 读 telephony 需要「电话」权限（订阅/小区信息）与「定位」权限（getAllCellInfo 的硬性前置）。
+    var readingCell by remember { mutableStateOf(false) }
+    var cellHint by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
+
+    fun startFillFromCell() {
+        if (readingCell) return
+        readingCell = true
+        scope.launch {
+            val fill = runCatching { readServingCellInput(ctx) }.getOrNull()
+            readingCell = false
+            if (fill == null) {
+                toast(ctx, "读不到当前基站：确认已插卡，并允许「电话」与「定位」权限")
+                return@launch
+            }
+            input = fill.raw
+            cellHint = "已填入：" + fill.hint
+            val raw = fill.raw.trim()
+            val list = if (saved.any { it.trim() == raw }) saved else saved + raw
+            saved = list
+            selectedIdx = list.indexOfFirst { it.trim() == raw }
+            saveSavedTargets(list)
+            toast(ctx, "已把当前基站设为本次目标")
+        }
+    }
+
+    val cellPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { grants ->
+        if (grants.isEmpty() || grants.values.all { it }) {
+            startFillFromCell()
+        } else {
+            toast(ctx, "需要「电话」与「定位」权限才能读取当前基站")
+        }
+    }
 
     val validation = remember(input) { TaskInputParser.validate(input) }
     val parsed = remember(input) { TaskInputParser.parse(input) }
@@ -118,10 +171,10 @@ fun NewTaskScreen(onBack: () -> Unit, onCreated: (String) -> Unit) {
         // ---------- 目标参数 ----------
         SectionHeader(
             "目标参数",
-            modifier = Modifier.padding(horizontal = 20.dp),
+            modifier = Modifier.padding(horizontal = Space.screenH),
             trailing = { HelpHint("目标参数怎么填", HelpTexts.targetParams) },
         )
-        GlassCard(Modifier.padding(horizontal = 20.dp)) {
+        GlassCard(Modifier.padding(horizontal = Space.screenH)) {
             Column {
                 GlassTextField(
                     value = input,
@@ -132,6 +185,30 @@ fun NewTaskScreen(onBack: () -> Unit, onCreated: (String) -> Unit) {
                     minLines = 2,
                     mono = true,
                 )
+                Spacer(Modifier.height(10.dp))
+                // 快捷：把本机当前驻留小区设为目标（不用再问上级/手抄编号）
+                OutlineButton(
+                    text = if (readingCell) "正在读取本机基站…" else "用本机当前基站",
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !readingCell,
+                ) {
+                    val missing = missingCellPermissions(ctx)
+                    if (missing.isEmpty()) {
+                        startFillFromCell()
+                    } else {
+                        cellPermLauncher.launch(missing.toTypedArray())
+                    }
+                }
+                if (cellHint.isNotBlank()) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = cellHint,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = WColors.OnBgDim,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 Spacer(Modifier.height(10.dp))
                 // 示例填充
                 FlowRow(
@@ -192,7 +269,7 @@ fun NewTaskScreen(onBack: () -> Unit, onCreated: (String) -> Unit) {
         // ---------- 已保存的目标清单 ----------
         SectionHeader(
             "已保存的目标（${saved.size}）",
-            modifier = Modifier.padding(horizontal = 20.dp),
+            modifier = Modifier.padding(horizontal = Space.screenH),
             trailing = {
                 if (saved.isNotEmpty()) {
                     GlassTextButton("清空") {
@@ -203,12 +280,11 @@ fun NewTaskScreen(onBack: () -> Unit, onCreated: (String) -> Unit) {
                 }
             },
         )
-        GlassCard(Modifier.padding(horizontal = 20.dp)) {
+        GlassCard(Modifier.padding(horizontal = Space.screenH)) {
             Column {
                 if (saved.isEmpty()) {
                     Text(
-                        "还没有保存的目标。输入一条参数后点上面的「保存到目标清单」，" +
-                            "上级给了几条就分几次存进来，再点一条作为本次走测目标。",
+                        "还没有目标。输入一条参数后点上面的按钮存进来；上级给了几条就分几次存。",
                         style = MaterialTheme.typography.bodySmall,
                         color = WColors.OnBgDim,
                     )
@@ -280,8 +356,8 @@ fun NewTaskScreen(onBack: () -> Unit, onCreated: (String) -> Unit) {
         Spacer(Modifier.height(12.dp))
 
         // ---------- 本次目标解析详情 ----------
-        SectionHeader("本次目标", modifier = Modifier.padding(horizontal = 20.dp))
-        GlassCard(Modifier.padding(horizontal = 20.dp)) {
+        SectionHeader("本次目标", modifier = Modifier.padding(horizontal = Space.screenH))
+        GlassCard(Modifier.padding(horizontal = Space.screenH)) {
             Column {
                 val target = selectedTarget
                 if (target == null) {
@@ -324,8 +400,8 @@ fun NewTaskScreen(onBack: () -> Unit, onCreated: (String) -> Unit) {
         Spacer(Modifier.height(12.dp))
 
         // ---------- 任务名称 ----------
-        SectionHeader("任务名称", modifier = Modifier.padding(horizontal = 20.dp))
-        GlassCard(Modifier.padding(horizontal = 20.dp)) {
+        SectionHeader("任务名称", modifier = Modifier.padding(horizontal = Space.screenH))
+        GlassCard(Modifier.padding(horizontal = Space.screenH)) {
             GlassTextField(
                 value = name,
                 onValueChange = { name = it },
@@ -348,9 +424,9 @@ fun NewTaskScreen(onBack: () -> Unit, onCreated: (String) -> Unit) {
                     HelpHint("信号强弱怎么算", HelpTexts.threshold)
                 }
             },
-            modifier = Modifier.padding(horizontal = 20.dp),
+            modifier = Modifier.padding(horizontal = Space.screenH),
         )
-        GlassCard(Modifier.padding(horizontal = 20.dp)) {
+        GlassCard(Modifier.padding(horizontal = Space.screenH)) {
             Column {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("-125", style = MonoText.style, color = WColors.OnBgDim)
@@ -359,7 +435,7 @@ fun NewTaskScreen(onBack: () -> Unit, onCreated: (String) -> Unit) {
                         value = threshold,
                         onValueChange = { threshold = it },
                         valueRange = -125f..-95f,
-                        steps = 29,
+                        steps = 0,
                         colors = SliderDefaults.colors(
                             thumbColor = WColors.Primary,
                             activeTrackColor = WColors.Primary,
@@ -384,7 +460,7 @@ fun NewTaskScreen(onBack: () -> Unit, onCreated: (String) -> Unit) {
             text = "创建并开始",
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp),
+                .padding(horizontal = Space.screenH),
             enabled = canCreate,
         ) {
             val t = selectedTarget ?: return@GlowButton
@@ -448,4 +524,52 @@ private fun formatLabel(f: TargetFormat): String = when (f) {
     TargetFormat.NCI -> "NCI · 5G 小区"
     TargetFormat.LAC_CI -> "LAC + CI"
     TargetFormat.LATLON_RADIUS -> "经纬度 + 半径"
+}
+
+/** 一键填当前基站的结果：可直接粘进输入框的文本 + 给用户看的一句话 */
+private data class CurrentCellFill(val raw: String, val hint: String)
+
+/** 读小区信息缺哪些运行时权限（电话权限读订阅/小区，定位权限是 getAllCellInfo 的前置） */
+private fun missingCellPermissions(ctx: Context): List<String> = buildList {
+    if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
+        add(Manifest.permission.READ_PHONE_STATE)
+    }
+    if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+        add(Manifest.permission.ACCESS_FINE_LOCATION)
+    }
+}
+
+/**
+ * 取「本机数据卡当前驻留小区」并拼成解析器认识的写法：
+ * 5G → `NCI <原始 NCI>`，4G → `ECI <原始 ECI>`；只认 NR / LTE（2G/3G 不做一键目标）。
+ *
+ * 为什么新建一个 reader：任务还没创建，全局控制器尚未绑定；这里临时读一次就停，
+ * 避免在任务页后台常驻一个 telephony 监听。
+ */
+private suspend fun readServingCellInput(ctx: Context): CurrentCellFill? = withContext(Dispatchers.IO) {
+    if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+        return@withContext null
+    }
+    val reader = AndroidCellReader(ctx)
+    try {
+        reader.start()
+        var snap: CellSnapshot? = null
+        // 首次轮询/回调可能还没到，最多等 2 秒
+        for (i in 0 until 20) {
+            reader.pollNow()
+            snap = reader.snapshot.value
+            val ready = snap?.sims?.any { s ->
+                s.cellId > 0L && (s.rat.equals("NR", true) || s.rat.equals("LTE", true))
+            } == true
+            if (ready) break
+            delay(100)
+        }
+        val s = snap ?: return@withContext null
+        // 优先跟「数据卡当前注册小区」走（双卡时用户说的就是这张卡）
+        val cell = CellTargetShortcut.pick(s.sims, s.serving?.ci) ?: return@withContext null
+        val raw = CellTargetShortcut.rawOf(cell) ?: return@withContext null
+        CurrentCellFill(raw = raw, hint = CellTargetShortcut.hintOf(cell))
+    } finally {
+        runCatching { reader.stop() }
+    }
 }

@@ -53,6 +53,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gakj.weilie.ui.theme.Motion
+import com.gakj.weilie.ui.theme.Radius
 import com.gakj.weilie.ui.theme.MonoText
 import com.gakj.weilie.ui.theme.WColors
 import com.gakj.weilie.ui.theme.glass
@@ -69,13 +70,13 @@ fun StaggerIn(index: Int, modifier: Modifier = Modifier, content: @Composable ()
     LaunchedEffect(Unit) {
         progress.animateTo(
             1f,
-            tween(Motion.normal, delayMillis = (index * 45).coerceAtMost(450), easing = Motion.EaseEmphasized),
+            tween(Motion.normal, delayMillis = (index * 40).coerceAtMost(320), easing = Motion.EaseEmphasized),
         )
     }
     Box(
         modifier.graphicsLayer {
             alpha = progress.value
-            translationY = (1f - progress.value) * 28f
+            translationY = (1f - progress.value) * 12f
         },
     ) { content() }
 }
@@ -85,7 +86,7 @@ fun StaggerIn(index: Int, modifier: Modifier = Modifier, content: @Composable ()
 fun GlassIconButton(
     icon: ImageVector? = null,
     label: String? = null,
-    size: Dp = 52.dp,
+    size: Dp = 48.dp,
     tint: Color = WColors.OnBg,
     onMap: Boolean = false,
     content: (@Composable androidx.compose.foundation.layout.BoxScope.() -> Unit)? = null,
@@ -93,7 +94,7 @@ fun GlassIconButton(
 ) {
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
-    val scale by animateFloatAsState(if (pressed) 0.9f else 1f, Motion.bouncy(), label = "glassBtnScale")
+    val scale by animateFloatAsState(if (pressed) 0.94f else 1f, Motion.bouncy(), label = "glassBtnScale")
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Box(
             modifier = Modifier
@@ -104,7 +105,7 @@ fun GlassIconButton(
             contentAlignment = Alignment.Center,
         ) {
             if (content != null) content()
-            else icon?.let { Icon(it, contentDescription = label, tint = tint, modifier = Modifier.size(22.dp)) }
+            else icon?.let { Icon(it, contentDescription = label, tint = tint, modifier = Modifier.size(20.dp)) }
         }
         if (label != null) {
             Spacer(Modifier.height(4.dp))
@@ -141,7 +142,7 @@ fun ScreenTopBar(
             .then(
                 if (onMap) Modifier
                     .padding(top = 6.dp)
-                    .mapGlass(RoundedCornerShape(18.dp))
+                    .mapGlass(Radius.lgShape)
                 else Modifier,
             )
             .padding(horizontal = 12.dp, vertical = 10.dp),
@@ -214,7 +215,7 @@ fun GlassTextField(
                 focusedTextColor = WColors.OnBg,
                 unfocusedTextColor = WColors.OnBg,
             ),
-            shape = RoundedCornerShape(14.dp),
+            shape = Radius.mdShape,
         )
     }
 }
@@ -236,8 +237,8 @@ fun StatusBadge(text: String, color: Color, modifier: Modifier = Modifier) {
 /** 键值行：左标签右等宽值 */
 @Composable
 fun KeyValueRow(key: String, value: String, valueColor: Color = WColors.OnBg) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.Top) {
-        Text(key, style = MaterialTheme.typography.bodyMedium, color = WColors.OnBgDim)
+    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.Top) {
+        Text(key, style = MaterialTheme.typography.bodySmall, color = WColors.OnBgDim)
         Spacer(Modifier.width(12.dp))
         Text(
             value,
@@ -263,9 +264,9 @@ fun GlassTextButton(
     Box(
         modifier
             .scale(scale)
-            .clip(RoundedCornerShape(14.dp))
+            .clip(Radius.mdShape)
             .background(if (enabled) WColors.ChipBg else WColors.ChipBg.copy(alpha = 0.35f))
-            .border(1.dp, WColors.GlassBorder, RoundedCornerShape(14.dp))
+            .border(1.dp, WColors.GlassBorder, Radius.mdShape)
             .clickable(interactionSource = interaction, indication = null, enabled = enabled) { onClick() }
             .padding(horizontal = 14.dp, vertical = 10.dp),
         contentAlignment = Alignment.Center,

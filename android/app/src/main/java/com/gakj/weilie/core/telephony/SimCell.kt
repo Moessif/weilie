@@ -81,19 +81,40 @@ object CellWatermark {
         )
     }
 
-    /** 坐标 + 时间那几行 */
-    fun footer(lat: Double, lon: Double, tsEpochMs: Long, place: String = ""): List<String> {
+    /**
+     * 坐标 + 时间那几行。
+     *
+     * [hasFix] 为 false 时不打印坐标——此时调用方传进来的经纬度只是「地图中心」之类的占位值，
+     * 烧进取证照片会变成伪坐标，因此只保留一行「定位中…」提示。
+     */
+    fun footer(
+        lat: Double,
+        lon: Double,
+        tsEpochMs: Long,
+        place: String = "",
+        hasFix: Boolean = true,
+    ): List<String> {
         val f = SimpleDateFormat("yyyy.MM.dd HH:mm:ss", Locale.CHINA)
-        return listOf(
-            place.ifBlank { "位置" },
-            String.format(Locale.US, "LAT:%.6f", lat),
-            String.format(Locale.US, "LON:%.6f", lon),
-            f.format(Date(tsEpochMs)),
-        )
+        val loc = if (hasFix) {
+            listOf(
+                String.format(Locale.US, "LAT:%.6f", lat),
+                String.format(Locale.US, "LON:%.6f", lon),
+            )
+        } else {
+            listOf("GPS 定位中…")
+        }
+        return listOf(place.ifBlank { "位置" }) + loc + f.format(Date(tsEpochMs))
     }
 
     /** 展平成「左列 右列」两栏文本行（供烧图时逐行绘制） */
-    fun flatLines(sims: List<SimCell>, lat: Double, lon: Double, tsEpochMs: Long, place: String = ""): List<String> {
+    fun flatLines(
+        sims: List<SimCell>,
+        lat: Double,
+        lon: Double,
+        tsEpochMs: Long,
+        place: String = "",
+        hasFix: Boolean = true,
+    ): List<String> {
         val cols = columns(sims)
         val rows = mutableListOf<String>()
         val maxRow = cols.maxOfOrNull { it.size } ?: 0
@@ -106,7 +127,7 @@ object CellWatermark {
                 rows += if (right.isBlank()) left else "$left    $right"
             }
         }
-        rows += footer(lat, lon, tsEpochMs, place)
+        rows += footer(lat, lon, tsEpochMs, place, hasFix)
         return rows
     }
 }

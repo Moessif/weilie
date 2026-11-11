@@ -150,6 +150,19 @@ fun Route.roomWsRoutes(store: RoomStore) {
                         broadcast(room, text)
                     }
 
+                    is WsMsg.AudioStart -> {
+                        // 语音只转发：不做历史、不落库，避免房间快照被音频撑爆
+                        broadcast(room, text, exceptUserId = msg.userId)
+                    }
+
+                    is WsMsg.AudioChunk -> {
+                        broadcast(room, text, exceptUserId = msg.userId)
+                    }
+
+                    is WsMsg.AudioStop -> {
+                        broadcast(room, text, exceptUserId = msg.userId)
+                    }
+
                     is WsMsg.Chat -> {
                         // QA-12：聊天入历史（保留最近 200 条），再包装 chatEcho 广播全员（含发送者）
                         appendChat(room, msg)

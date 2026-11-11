@@ -55,9 +55,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.app.NotificationManagerCompat
@@ -68,8 +70,13 @@ import com.gakj.weilie.ui.common.AnimatedDot
 import com.gakj.weilie.ui.common.GlassTextButton
 import com.gakj.weilie.ui.common.hasPerm
 import com.gakj.weilie.ui.map.BaiduBootstrap
+import com.gakj.weilie.ui.theme.Eyebrow
 import com.gakj.weilie.ui.theme.GlassCard
 import com.gakj.weilie.ui.theme.GlowButton
+import com.gakj.weilie.ui.theme.Hairline.hairline
+import com.gakj.weilie.ui.theme.Radius
+import com.gakj.weilie.ui.theme.Rhythm
+import com.gakj.weilie.ui.theme.Space
 import com.gakj.weilie.ui.theme.WColors
 import com.gakj.weilie.ui.theme.glass
 import kotlinx.coroutines.launch
@@ -118,7 +125,7 @@ fun WizardScreen(onDone: () -> Unit) {
                 text = if (pagerState.currentPage == 0) "开始了解" else "下一步",
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 24.dp),
+                    .padding(horizontal = Space.screenH),
             ) {
                 scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) }
             }
@@ -146,7 +153,7 @@ fun WizardScreen(onDone: () -> Unit) {
                 text = "下一步：权限检查",
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 24.dp),
+                    .padding(horizontal = Space.screenH),
                 enabled = agreed,
             ) {
                 // 保留原「进入围猎」的合规动作：写同意标记 + 初始化地图 SDK
@@ -168,22 +175,57 @@ private fun PageIntro() {
         Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 24.dp),
+            .padding(horizontal = Space.screenH),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(Rhythm.section))
+        Eyebrow("围猎 · FIELD SCOUT")
+        Spacer(Modifier.height(Space.x2))
         Text("围猎", style = MaterialTheme.typography.displaySmall, color = WColors.OnBg)
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(Space.x2))
         Text("蜂窝网络覆盖实测与协同定位工具", style = MaterialTheme.typography.bodyMedium, color = WColors.OnBgDim)
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(Rhythm.section))
         FeatureRow(Icons.Rounded.CenterFocusStrong, "目标参数智能解析", "ECI / NCI / LAC+CI / 经纬度多格式一键识别")
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(Space.x2))
         FeatureRow(Icons.Rounded.NetworkCheck, "1Hz 采样与信号评级", "RSRP/RSRQ/SINR 逐秒记录，六档评级直观呈现")
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(Space.x2))
         FeatureRow(Icons.Rounded.Layers, "覆盖拟合与等值线", "凹包边界 + 插值等值线，覆盖范围一眼看清")
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(Space.x2))
         FeatureRow(Icons.Rounded.Groups, "多人协同与 AI 助手", "队友位置实时共享，内置通信技术问答助手")
-        Spacer(Modifier.height(32.dp))
+        Spacer(Modifier.height(Rhythm.section))
+        Eyebrow("三步上手")
+        Spacer(Modifier.height(Space.x3))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Space.x2)) {
+            listOf("01" to "建任务", "02" to "现场走测", "03" to "查看覆盖").forEach { (num, label) ->
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .clip(Radius.mdShape)
+                        .background(WColors.ChipBg)
+                        .hairline(Radius.mdShape)
+                        .padding(vertical = Space.x3),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        num,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = WColors.Primary,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                    Spacer(Modifier.height(Space.x1))
+                    Text(label, style = MaterialTheme.typography.bodySmall, color = WColors.OnBg)
+                }
+            }
+        }
+        Spacer(Modifier.height(Space.x3))
+        Text(
+            "普通手机即可完成覆盖实测，无需专业扫频设备。",
+            style = MaterialTheme.typography.bodySmall,
+            color = WColors.OnBgDim,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(Rhythm.section))
     }
 }
 
@@ -193,13 +235,14 @@ private fun FeatureRow(icon: ImageVector, title: String, desc: String) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 Modifier
-                    .size(44.dp)
-                    .glass(shape = CircleShape),
+                    .size(40.dp)
+                    .background(WColors.ChipBg, CircleShape)
+                    .hairline(CircleShape),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(icon, contentDescription = title, tint = WColors.Primary, modifier = Modifier.size(24.dp))
+                Icon(icon, contentDescription = title, tint = WColors.Primary, modifier = Modifier.size(20.dp))
             }
-            Spacer(Modifier.size(14.dp))
+            Spacer(Modifier.size(Space.x3))
             Column {
                 Text(title, style = MaterialTheme.typography.titleMedium, color = WColors.OnBg)
                 Text(desc, style = MaterialTheme.typography.bodyMedium, color = WColors.OnBgDim)
@@ -215,9 +258,10 @@ private fun PageAudience() {
         Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 24.dp),
+            .padding(horizontal = Space.screenH),
+        verticalArrangement = Arrangement.Center,
     ) {
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(Space.x6))
         Text("适用人群", style = MaterialTheme.typography.headlineMedium, color = WColors.OnBg)
         Spacer(Modifier.height(14.dp))
         GlassCard(Modifier.fillMaxWidth()) {
@@ -252,7 +296,7 @@ private fun PageLegal(agreed: Boolean, onAgreed: (Boolean) -> Unit) {
     Column(
         Modifier
             .fillMaxSize()
-            .padding(horizontal = 24.dp),
+            .padding(horizontal = Space.screenH),
     ) {
         Spacer(Modifier.height(16.dp))
         Text("法律声明", style = MaterialTheme.typography.headlineMedium, color = WColors.OnBg)
@@ -358,7 +402,7 @@ private fun PagePermission(onFinish: () -> Unit) {
         Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 24.dp),
+            .padding(horizontal = Space.screenH),
     ) {
         Spacer(Modifier.height(16.dp))
         Text("权限检查", style = MaterialTheme.typography.headlineMedium, color = WColors.OnBg)
@@ -461,7 +505,7 @@ private fun PagePermission(onFinish: () -> Unit) {
                 .clickable { finishNow() }
                 .padding(vertical = 8.dp),
         )
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(Space.x6))
     }
 }
 

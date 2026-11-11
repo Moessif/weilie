@@ -30,6 +30,7 @@ import com.gakj.weilie.ui.common.ScreenTopBar
 import com.gakj.weilie.ui.common.toast
 import com.gakj.weilie.ui.theme.GlassCard
 import com.gakj.weilie.ui.theme.GlowButton
+import com.gakj.weilie.ui.theme.Space
 import com.gakj.weilie.ui.theme.WColors
 
 /**
@@ -54,13 +55,13 @@ fun LoginScreen(
             .verticalScroll(rememberScrollState()),
     ) {
         ScreenTopBar(title = "登录", onBack = onBack)
-        Spacer(Modifier.height(28.dp))
+        Spacer(Modifier.height(Space.x6))
 
         // 头像与欢迎语
         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
             AvatarCircle(84.dp, null, logged = false)
         }
-        Spacer(Modifier.height(14.dp))
+        Spacer(Modifier.height(Space.x4))
         Text(
             "欢迎来到围猎",
             style = MaterialTheme.typography.headlineSmall,
@@ -68,7 +69,7 @@ fun LoginScreen(
             modifier = Modifier.fillMaxWidth(),
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
         )
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(6.dp))
         Text(
             "登录后可同步组织信息与协同身份",
             style = MaterialTheme.typography.bodySmall,
@@ -76,18 +77,18 @@ fun LoginScreen(
             modifier = Modifier.fillMaxWidth(),
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
         )
-        Spacer(Modifier.height(28.dp))
+        Spacer(Modifier.height(Space.x6))
 
-        GlassCard(Modifier.padding(horizontal = 20.dp)) {
+        GlassCard(Modifier.padding(horizontal = Space.screenH)) {
             Column {
                 GlassTextField(user, { user = it; err = null }, label = "账号", placeholder = "至少 4 个字符")
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(Space.x3))
                 GlassTextField(pass, { pass = it; err = null }, label = "密码", placeholder = "请输入密码", isPassword = true)
                 if (err != null) {
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(Space.x2))
                     Text(err!!, style = MaterialTheme.typography.bodySmall, color = WColors.Danger)
                 }
-                Spacer(Modifier.height(18.dp))
+                Spacer(Modifier.height(Space.x4))
                 GlowButton(
                     "登 录",
                     modifier = Modifier.fillMaxWidth(),
@@ -105,11 +106,19 @@ fun LoginScreen(
             }
         }
 
-        Spacer(Modifier.weight(1f))
+        Spacer(Modifier.height(Space.x4))
         // 游客模式：不登录直接返回大厅
         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
             GlassTextButton("游客模式（暂不登录）") { onDone() }
         }
-        Spacer(Modifier.navigationBarsPadding().height(20.dp))
+        Spacer(Modifier.height(Space.x8))
+        Text(
+            "账号仅保存在本机，用于生成协同身份与导出署名",
+            style = MaterialTheme.typography.labelSmall,
+            color = WColors.OnBgDim.copy(alpha = 0.7f),
+            modifier = Modifier.fillMaxWidth(),
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+        )
+        Spacer(Modifier.navigationBarsPadding().height(24.dp))
     }
 }

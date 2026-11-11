@@ -23,7 +23,14 @@ import com.gakj.weilie.ui.AppGraph
 import com.gakj.weilie.ui.Route
 
 /**
- * 「围猎」色彩与排版：深夜蓝底 + 冷青主色 + 紫罗兰辅助（公安场景沉稳、荧光数据醒目）。
+ * 「围猎」色彩与排版：夜间仪表盘（Night Instrument）方向。
+ *
+ * 视觉主张：近黑的海军蓝底 + 单一冷青主色 + 发丝线分层；不用紫色/紫色渐变，
+ * 不靠重阴影和发光堆质感，靠留白、字阶与 1dp 描边建立秩序。数据用等宽字，
+ * 现场看一眼就能读数（RSRP / NCI / 时间）。
+ *
+ * 2026-11-11 质感升级（v0.12）：底色压暗到 #060910 一档、辅助色从紫罗兰换成
+ * 同族青绿；玻璃层透明度整体下调一半（原来是 8%~18% 白，看起来发灰）。
  *
  * 这里的每个颜色都是 Compose 快照状态：全工程几百处 `WColors.X` 读取点无需改动，
  * [applyTheme] 改写调色板后，@Composable 里读到的地方会自动重组。
@@ -84,32 +91,32 @@ object WColors {
     /** 基础层：暗色沿用旧版值；亮色为冷灰底 + 白玻璃 + 深色文字 */
     internal fun writeBase(dark: Boolean) {
         if (dark) {
-            Bg0 = Color(0xFF0B1020)
-            Bg1 = Color(0xFF111834)
-            Bg2 = Color(0xFF1A2447)
-            Glass = Color(0x14FFFFFF)
-            GlassBorder = Color(0x2EFFFFFF)
-            GlassTop = Color(0x1AFFFFFF)
-            GlassBottom = Color(0x0AFFFFFF)
+            Bg0 = Color(0xFF060910)
+            Bg1 = Color(0xFF0B1120)
+            Bg2 = Color(0xFF121A2C)
+            Glass = Color(0x0FFFFFFF)
+            GlassBorder = Color(0x24FFFFFF)
+            GlassTop = Color(0x12FFFFFF)
+            GlassBottom = Color(0x06FFFFFF)
             GlassBorderSoft = Color(0x14FFFFFF)
-            FieldBg = Color(0x0FFFFFFF)
+            FieldBg = Color(0x1AFFFFFF)
             FieldBgIdle = Color(0x0AFFFFFF)
             ChipBg = Color(0x0FFFFFFF)
-            ChipBorder = Color(0x1AFFFFFF)
-            BarOff = Color(0x33FFFFFF)
-            OnBg = Color(0xFFE6EDF7)
-            OnBgDim = Color(0xFF94A3B8)
-            GridLine = Color(0x14FFFFFF)
-            MapGlassTop = Color(0xF20B1220)
-            MapGlassBottom = Color(0xE6080D16)
-            MapGlassBorderTop = Color(0x47FFFFFF)
+            ChipBorder = Color(0x1FFFFFFF)
+            BarOff = Color(0x2AFFFFFF)
+            OnBg = Color(0xFFE9EEF7)
+            OnBgDim = Color(0xFF8895AA)
+            GridLine = Color(0x12FFFFFF)
+            MapGlassTop = Color(0xF2070C16)
+            MapGlassBottom = Color(0xE6040810)
+            MapGlassBorderTop = Color(0x40FFFFFF)
             MapGlassBorderBottom = Color(0x12FFFFFF)
-            MapLabelBg = Color(0xB30B1220)
-            MapLabelFg = Color(0xFFE6EDF7)
+            MapLabelBg = Color(0xCC070C15)
+            MapLabelFg = Color(0xFFE9EEF7)
         } else {
-            Bg0 = Color(0xFFF4F7FB)
+            Bg0 = Color(0xFFF5F7FA)
             Bg1 = Color(0xFFFFFFFF)
-            Bg2 = Color(0xFFE9EFF8)
+            Bg2 = Color(0xFFEAEFF6)
             Glass = Color(0x8CFFFFFF)
             GlassBorder = Color(0x1F0B1020)
             GlassTop = Color(0xD9FFFFFF)
@@ -154,19 +161,19 @@ object WColors {
                 val l = if (dark) 0.62f else lightL
                 primary = hslColor(spec.hue, spec.sat, l)
                 primaryDim = hslColor(spec.hue, spec.sat, l * 0.55f)
-                secondary = hslColor(spec.hue + 55f, spec.sat * 0.9f, if (dark) 0.72f else 0.42f)
+                secondary = hslColor(spec.hue + 22f, spec.sat * 0.85f, if (dark) 0.70f else 0.42f)
             }
-            // 默认冷青 + 深色：沿用旧版配色，升级后观感逐像素不变
+            // 默认冷青 + 深色：主色不动（现场识别惯性），辅助色改为同族青绿（原紫罗兰已弃用）
             spec.accent == DEFAULT_ACCENT && dark -> {
                 primary = Color(0xFF22D3EE)
                 primaryDim = Color(0xFF0E7490)
-                secondary = Color(0xFFA78BFA)
+                secondary = Color(0xFF5EEAD4)
             }
             else -> {
                 val l = if (dark) maxOf(accentHsl[2], 0.58f) else minOf(accentHsl[2], lightL)
                 primary = hslColor(accentHsl[0], accentHsl[1], l)
                 primaryDim = hslColor(accentHsl[0], accentHsl[1], l * 0.55f)
-                secondary = hslColor(accentHsl[0] + 55f, accentHsl[1] * 0.9f, if (dark) 0.72f else 0.42f)
+                secondary = hslColor(accentHsl[0] + 22f, accentHsl[1] * 0.85f, if (dark) 0.70f else 0.42f)
             }
         }
         Primary = primary
@@ -175,9 +182,9 @@ object WColors {
         OnPrimary = onColorFor(primary)
 
         // 语义色向主题色混 20%：跟主题协调，但绿/红/蓝的相对关系不变，现场仍一眼可分
-        Track = mix(Color(0xFF38BDF8), primary, 0.20f)
-        Target = mix(Color(0xFFFF6B6B), primary, 0.20f)
-        Teammate = mix(Color(0xFF4ADE80), primary, 0.20f)
+        Track = mix(Color(0xFF38BDF8), primary, 0.12f)
+        Target = mix(Color(0xFFFF6B6B), primary, 0.12f)
+        Teammate = mix(Color(0xFF4ADE80), primary, 0.12f)
     }
 }
 
@@ -366,15 +373,19 @@ object ThemeController {
 // ---------- 排版 ----------
 
 private val AppTypography = Typography(
-    displaySmall = TextStyle(fontWeight = FontWeight.Bold, fontSize = 34.sp, letterSpacing = 0.2.sp),
-    headlineMedium = TextStyle(fontWeight = FontWeight.Bold, fontSize = 26.sp),
-    titleLarge = TextStyle(fontWeight = FontWeight.SemiBold, fontSize = 20.sp),
-    titleMedium = TextStyle(fontWeight = FontWeight.SemiBold, fontSize = 16.sp),
+    // 大标题：收紧字距（中文标题收紧 0.3~0.8sp 会明显更「定」）
+    displaySmall = TextStyle(fontWeight = FontWeight.Bold, fontSize = 34.sp, letterSpacing = (-0.8).sp),
+    headlineMedium = TextStyle(fontWeight = FontWeight.Bold, fontSize = 27.sp, letterSpacing = (-0.5).sp),
+    headlineSmall = TextStyle(fontWeight = FontWeight.SemiBold, fontSize = 22.sp, letterSpacing = (-0.4).sp),
+    titleLarge = TextStyle(fontWeight = FontWeight.SemiBold, fontSize = 19.sp, letterSpacing = (-0.2).sp),
+    titleMedium = TextStyle(fontWeight = FontWeight.SemiBold, fontSize = 15.5.sp, letterSpacing = (-0.1).sp),
+    titleSmall = TextStyle(fontWeight = FontWeight.Medium, fontSize = 13.5.sp),
     bodyLarge = TextStyle(fontSize = 15.sp, lineHeight = 22.sp),
-    bodyMedium = TextStyle(fontSize = 13.sp, lineHeight = 19.sp),
-    labelLarge = TextStyle(fontWeight = FontWeight.Medium, fontSize = 13.sp),
-    labelSmall = TextStyle(fontWeight = FontWeight.Medium, fontSize = 10.5.sp, letterSpacing = 0.4.sp),
-    // 等宽数据（工程参数面板专用）
+    bodyMedium = TextStyle(fontSize = 13.5.sp, lineHeight = 20.sp),
+    bodySmall = TextStyle(fontSize = 12.sp, lineHeight = 17.sp),
+    labelLarge = TextStyle(fontWeight = FontWeight.Medium, fontSize = 13.sp, letterSpacing = 0.1.sp),
+    labelMedium = TextStyle(fontWeight = FontWeight.Medium, fontSize = 11.5.sp, letterSpacing = 0.4.sp),
+    labelSmall = TextStyle(fontWeight = FontWeight.Medium, fontSize = 10.5.sp, letterSpacing = 0.7.sp),
 )
 
 /** 工程参数用等宽风格（无自定义字体时用默认等宽回退） */
