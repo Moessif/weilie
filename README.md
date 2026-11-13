@@ -4,7 +4,7 @@
 通过**移动打点**反推目标基站的真实覆盖范围，并把结果共享给队友，用于搜捕、找人、清查等任务。
 
 > 参赛项目：中国人民公安大学第三届学生科技应用创新大赛 · 公安网络通信与移动应用关键技术赛道
-> 当前版本 **v0.11.2**（Android，versionCode 25）
+> 当前版本 **v0.13.0**（Android，versionCode 32）
 
 ---
 
@@ -26,6 +26,9 @@
 | 取证相机 | 类水印相机版式（大字时间 / 日期 / 地址 / 蜂窝水印烧入 JPG），5 类取证类型（普通/隐蔽摄像头/可疑摄像头/可疑设备/其他）在地图用不同 emoji 图标区分 |
 | 影像验真 | 照片 SHA-256 + 服务端 HMAC 签名登记，生成 8 位验证码；跨设备也能用验证码远程查看登记信息，扫码开网页复核原图是否被改过 |
 | 静默跟踪 | 前台服务 + 震动提示（主区/邻区/脱离三种节奏，强度可调），不发声不亮屏，状态写日志，明显停止入口 |
+| Shizuku 邻区增强 | 免 root 用 shell 身份读 `dumpsys telephony.registry`，补全被 ROM 过滤的邻区；设置页显示服务版本/UID/最近读取条数，未授权自动回退系统 API |
+| 跨设备照片 | 拍照登记后上传原图到自建服务器，队友点标点即可看到原图与登记信息；服务端 `data/photos` 存储，单张上限 8 MB |
+| 语音对讲 | 半双工按住说话，16 kHz PCM 100 ms 帧、WebSocket 房间内转发，端到端 200—400 ms，约 43 KB/s |
 | 数据导出 | CSV / GeoJSON / KML，轨迹照片导出可带真实百度底图与各类覆盖图层；历史任务支持长按/多选/全部删除 |
 | 培训模式 | 内置 200 点回放剧本 + 解说卡，供学警无真机环境下学习 |
 | 主题系统 | 深色主题（v0.11.0 起固定深色）+ 10 套强调色 + HSL 微调，全局玻璃拟态设计语言 |
@@ -84,6 +87,8 @@ java -jar weilie-server-all.jar          # 默认 0.0.0.0:8080
 #   WS   /ws/{roomId}?userId=&name=&role=
 #   POST /api/photo/register           照片登记，返回 code / sig
 #   GET  /api/photo/verify?code=       验签 / 跨设备查询登记信息
+#   POST /api/photo/upload?code=       上传取证原图（≤8 MB）
+#   GET  /api/photo/file?code=         下载取证原图
 #   GET  /v/{code}                     验真网页（扫码打开）
 #   GET  /api/cells/near|cell|stats     基站库查询（OpenCelliD 瓦片缓存）
 ```
@@ -92,9 +97,9 @@ java -jar weilie-server-all.jar          # 默认 0.0.0.0:8080
 
 ## 已交付产物
 
-- **Android 安装包**：见 [Releases](https://github.com/Moessif/weilie/releases) → `weilie-v0.11.2-debug.apk`（arm64-v8a / x86_64，含百度地图 SDK 原生库，约 78 MB）
+- **Android 安装包**：见 [Releases](https://github.com/Moessif/weilie/releases) → `weilie-v0.13.0-debug.apk`（arm64-v8a / x86_64，含百度地图 SDK 原生库，约 78 MB）
   - 体积超过 GitHub 对仓库内单文件的建议上限（50 MB），因此**不入库**，改由 Releases 分发
-- `dist/weilie-server-v0.11.2-all.jar`：服务端可执行 fatJar（随源码入库，可直接 `java -jar` 启动）
+- `dist/weilie-server-v0.13.0-all.jar`：服务端可执行 fatJar（随源码入库，可直接 `java -jar` 启动）
 - `dist/` 仅供放置已构建产物；`dist/*.apk` 已在 `.gitignore` 中排除
 
 ## 战报（全版本更新记录）
