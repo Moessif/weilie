@@ -128,6 +128,10 @@ fun exportGeoJsonAndShare(
         hullLatLon = result?.hullLatLon,
         bufferedLatLon = result?.bufferedLatLon,
         isolines = result?.isolineLoopsLatLon ?: emptyList(),
+        holesLatLon = result?.holesLatLon ?: emptyList(),
+        coverageAreaM2 = result?.coverageAreaM2,
+        hullAreaM2 = result?.hullAreaM2,
+        engine = result?.engine?.label,
     )
     val f = writeExportFile(context, "${taskId}_coverage.geojson", json)
     if (f == null) {
@@ -150,6 +154,10 @@ fun exportKmlAndShare(
         samples = samples,
         hullLatLon = result?.hullLatLon,
         isolines = result?.isolineLoopsLatLon ?: emptyList(),
+        holesLatLon = result?.holesLatLon ?: emptyList(),
+        coverageAreaM2 = result?.coverageAreaM2,
+        hullAreaM2 = result?.hullAreaM2,
+        engine = result?.engine?.label,
     )
     val f = writeExportFile(context, "${taskId}_coverage.kml", kml)
     if (f == null) {

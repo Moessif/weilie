@@ -12,6 +12,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -21,10 +22,15 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Groups
@@ -47,6 +53,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
@@ -179,6 +186,13 @@ fun HomeScreen(
                 AvatarCircle(42.dp, nick, logged) { onAvatar() }
             }
 
+            // 内容区可滚动：小屏（320×568dp）下雷达 + 卡片会超出屏幕，
+            // 底部停靠栏必须始终可见，否则用户进不了历史/设置（真机实测问题）
+            Column(
+                Modifier
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState()),
+            ) {
             // ---------- 主视觉：雷达仪表 ----------
             RadarPanel(
                 running = running,
@@ -200,46 +214,95 @@ fun HomeScreen(
                     color = WColors.OnBgDim,
                     modifier = Modifier.padding(bottom = Space.x2),
                 )
+                // 已完成 = manifest 里有 endedAt（v0.13.7）
+                val recentFinished = recent.endedAtEpochMs != null
                 GlassCard(
                     Modifier.fillMaxWidth(),
                     shape = Radius.lgShape,
-                    onClick = { onContinueTask(recent.taskId) },
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            Modifier
-                                .size(42.dp)
-                                .glass(shape = CircleShape),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(Icons.Rounded.History, contentDescription = null, tint = WColors.Primary, modifier = Modifier.size(20.dp))
+                    Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                Modifier
+                                    .size(42.dp)
+                                    .glass(shape = CircleShape),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(Icons.Rounded.History, contentDescription = null, tint = WColors.Primary, modifier = Modifier.size(20.dp))
+                            }
+                            Spacer(Modifier.size(Space.x3))
+                            Column(Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        recent.title,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = WColors.OnBg,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false),
+                                    )
+                                    if (recentFinished) {
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(
+                                            "已完成",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = WColors.OnBgDim,
+                                        )
+                                    }
+                                }
+                                Spacer(Modifier.height(3.dp))
+                                Text(
+                                    if (recentFinished) {
+                                        "${recent.sampleCount} 个样本 · 继续会追加到该会话"
+                                    } else {
+                                        "${recent.sampleCount} 个样本 · ${fmtDay(recent.startedAtEpochMs)}"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = WColors.OnBgDim,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
                         }
-                        Spacer(Modifier.size(Space.x3))
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                recent.title,
-                                style = MaterialTheme.typography.titleMedium,
-                                color = WColors.OnBg,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Spacer(Modifier.height(3.dp))
-                            Text(
-                                "${recent.sampleCount} 个样本 · ${fmtDay(recent.startedAtEpochMs)}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = WColors.OnBgDim,
-                                maxLines = 1,
-                            )
+                        Spacer(Modifier.height(Space.x3))
+                        // 两个动作并列：继续（左）/ 新建（右），避免“只能继续”
+                        Row(horizontalArrangement = Arrangement.spacedBy(Space.x2)) {
+                            Row(
+                                Modifier
+                                    .weight(1f)
+                                    .clip(Radius.pillShape)
+                                    .background(WColors.ChipBg)
+                                    .clickable { onContinueTask(recent.taskId) }
+                                    .padding(vertical = 10.dp),
+                                horizontalArrangement = Arrangement.Center,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    if (recentFinished) "继续追加" else "继续上次",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = WColors.Primary,
+                                )
+                                Icon(Icons.Rounded.ChevronRight, contentDescription = null, tint = WColors.Primary, modifier = Modifier.size(16.dp))
+                            }
+                            Row(
+                                Modifier
+                                    .weight(1f)
+                                    .clip(Radius.pillShape)
+                                    .background(WColors.Primary.copy(alpha = 0.16f))
+                                    .clickable { onNewTask() }
+                                    .padding(vertical = 10.dp),
+                                horizontalArrangement = Arrangement.Center,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(Icons.Rounded.Add, contentDescription = null, tint = WColors.Primary, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text(
+                                    "新建",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = WColors.Primary,
+                                )
+                            }
                         }
-                        Spacer(Modifier.size(Space.x2))
-                        Text(
-                            "继续",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = WColors.Primary,
-                            modifier = Modifier.clickable(onClick = { onContinueTask(recent.taskId) }),
-                        )
-                        Spacer(Modifier.size(Space.x1))
-                        Icon(Icons.Rounded.ChevronRight, contentDescription = null, tint = WColors.OnBgDim, modifier = Modifier.size(18.dp))
                     }
                 }
                 Spacer(Modifier.height(Space.x2))
@@ -309,6 +372,7 @@ fun HomeScreen(
             }
 
             Spacer(Modifier.height(Space.x3))
+            } // 内容区（可滚动）结束
 
             // ---------- 底部停靠栏 ----------
             Row(
@@ -340,8 +404,9 @@ fun HomeScreen(
                 Modifier
                     .align(Alignment.TopEnd)
                     .statusBarsPadding()
-                    .padding(top = 66.dp, end = Space.screenH)
-                    .width(300.dp),
+                    .padding(top = 132.dp, end = Space.screenH)
+                    .widthIn(max = 300.dp)
+                    .fillMaxWidth(0.88f),
                 shape = Radius.lgShape,
             ) {
                 Column {
@@ -448,7 +513,12 @@ private fun RadarPanel(running: Boolean, modifier: Modifier = Modifier) {
 
     Box(modifier, contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Canvas(Modifier.size(300.dp)) {
+            Canvas(
+                Modifier
+                    .fillMaxWidth(0.82f)
+                    .aspectRatio(1f)
+                    .sizeIn(maxWidth = 300.dp, maxHeight = 300.dp),
+            ) {
                 val c = Offset(size.width / 2f, size.height / 2f)
                 val r = size.minDimension / 2f
 
@@ -528,12 +598,7 @@ private fun RadarPanel(running: Boolean, modifier: Modifier = Modifier) {
                     color = if (running) WColors.OnBg else WColors.OnBgDim,
                 )
             }
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "逐秒采样 · GPS 双重安检 · 自动拟合覆盖范围",
-                style = MonoText.style.copy(fontSize = 10.5.sp),
-                color = WColors.OnBgDim.copy(alpha = 0.7f),
-            )
+            // 小屏上这行说明会与页头/统计卡重叠，且状态行已表达同样信息 → 不再显示（v0.13.8）
         }
     }
 }

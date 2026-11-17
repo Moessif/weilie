@@ -77,6 +77,8 @@ sealed class WsMsg {
     @Serializable
     @SerialName("zone")
     data class Zone(
+        /** 服务端分配的区域 id（v1.2）：删除/统计以它为准；老客户端为空 */
+        val id: String = "",
         val by: String,
         val kind: String, // CIRCLE / POLYGON
         val centerLat: Double? = null,
@@ -86,6 +88,10 @@ sealed class WsMsg {
         val assignees: List<String> = emptyList(),
         val note: String = "",
         val replace: Boolean = false,
+        /** v1.3：软删除标记；数据保留用于审计/历史，客户端不再显示 */
+        val deleted: Boolean = false,
+        /** v1.10：待确认的转移目标 userId；为空表示无待处理转移 */
+        val pendingTransferTo: String = "",
         val ts: Long,
     ) : WsMsg()
 
@@ -97,6 +103,79 @@ sealed class WsMsg {
         val to: String,
         val ts: Long,
     ) : WsMsg()
+
+    /** 队员申请接任队长（v1.2）：服务端只转发给现任队长；队长同意后走 promote */
+    @Serializable
+    @SerialName("promoteRequest")
+    data class PromoteRequest(
+        val from: String,
+        val to: String,
+        val ts: Long,
+    ) : WsMsg()
+
+    /** 队长拒绝接任申请（v1.2）：服务端转发给申请人 */
+    @Serializable
+    @SerialName("promoteDecline")
+    data class PromoteDecline(
+        val from: String,
+        val to: String,
+        val ts: Long,
+    ) : WsMsg()
+
+    /** v1.10：发起任务区转移（创建者或队长），目标需确认 */
+    @Serializable
+    @SerialName("zoneTransferRequest")
+    data class ZoneTransferRequest(
+        val id: String,
+        val by: String,
+        val to: String,
+        val ts: Long,
+    ) : WsMsg()
+
+    /** v1.10：接受任务区转移（仅目标本人） */
+    @Serializable
+    @SerialName("zoneTransferAccept")
+    data class ZoneTransferAccept(
+        val id: String,
+        val by: String,
+        val ts: Long,
+    ) : WsMsg()
+
+    /** v1.10：拒绝任务区转移（仅目标本人） */
+    @Serializable
+    @SerialName("zoneTransferDecline")
+    data class ZoneTransferDecline(
+        val id: String,
+        val by: String,
+        val ts: Long,
+    ) : WsMsg()
+
+    /** v1.10：清空全部任务区（仅队长，软删除，用于「重划」） */
+    @Serializable
+    @SerialName("zoneClear")
+    data class ZoneClear(
+        val by: String,
+        val ts: Long,
+    ) : WsMsg()
+
+    /** 删除任务区（v1.2）：创建者本人或现任队长可删 */
+    @Serializable
+    @SerialName("zoneDelete")
+    data class ZoneDelete(
+        val by: String,
+        val id: String,
+        val ts: Long,
+    ) : WsMsg()
+
+    /** 单个任务区的完成度（v1.2，随 state 下发）：按 20m 网格统计区内被采样覆盖的比例 */
+    @Serializable
+    data class ZoneStat(
+        val id: String,
+        val covered: Int = 0,
+        val total: Int = 0,
+        val ratio: Double = 0.0,
+        val samples: Int = 0,
+    )
 
     /** 地图标记（可疑设备特殊标记等），队长可见全部队员标记 */
     @Serializable
@@ -173,6 +252,10 @@ sealed class WsMsg {
         val markers: List<Marker> = emptyList(),
         /** 聊天历史（服务端保留最近 200 条，重连后随 state 下发补齐） */
         val chats: List<Chat> = emptyList(),
+        /** 任务区完成度（v1.2）；老服务端不下发时为空，客户端按无数据处理 */
+        val zoneStats: List<ZoneStat> = emptyList(),
+        /** v1.8：全队合并采样（降采样 ≤1500），供客户端拟合全队覆盖 */
+        val teamSamples: List<SamplePoint> = emptyList(),
     ) : WsMsg()
 
     @Serializable
@@ -191,6 +274,17 @@ sealed class WsMsg {
     @SerialName("pong")
     data class Pong(val ts: Long) : WsMsg()
 }
+
+/** v1.8：团队合并采样的精简点（state.teamSamples 用，降采样下发） */
+@Serializable
+data class SamplePoint(
+    val userId: String,
+    val lat: Double,
+    val lon: Double,
+    val rsrp: Int? = null,
+    val onTarget: Boolean = false,
+    val ts: Long,
+)
 
 /** 房间内单个成员的对外视图（state.members 列表项） */
 @Serializable

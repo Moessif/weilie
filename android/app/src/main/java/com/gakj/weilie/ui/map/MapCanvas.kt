@@ -15,6 +15,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -214,6 +215,8 @@ fun CanvasMap(
     samples: List<SampleRecord> = emptyList(),
     hullLatLon: List<Pair<Double, Double>>? = null,
     bufferedLatLon: List<Pair<Double, Double>>? = null,
+    /** 内洞（v0.13.3）：外环里的空洞，用 even-odd 挖空 */
+    holesLatLon: List<List<Pair<Double, Double>>> = emptyList(),
     isolines: List<List<Pair<Double, Double>>> = emptyList(),
     members: List<MemberView> = emptyList(),
     markers: List<WsMsg.Marker> = emptyList(),
@@ -309,8 +312,21 @@ fun CanvasMap(
             drawPath(path, WColors.Secondary, style = Stroke(width = 3.dp.toPx()))
         }
         // 3. 拟合边界（缓冲带填充 → 凸包 → 等值线）
-        bufferedLatLon?.takeIf { it.size >= 3 }?.let {
-            drawPath(ringPath(it, camera, true), WColors.Primary.copy(alpha = 0.10f))
+        val hasHoles = holesLatLon.any { it.size >= 3 }
+        if (hasHoles) {
+            // 有内洞：用 even-odd 把中间没走过的区域挖空，避免整片涂绿
+            hullLatLon?.takeIf { it.size >= 3 }?.let { ring ->
+                val p = ringPath(ring, camera, true)
+                holesLatLon.forEach { h ->
+                    if (h.size >= 3) p.addPath(ringPath(h, camera, true), Offset.Zero)
+                }
+                p.fillType = PathFillType.EvenOdd
+                drawPath(p, WColors.Primary.copy(alpha = 0.12f))
+            }
+        } else {
+            bufferedLatLon?.takeIf { it.size >= 3 }?.let {
+                drawPath(ringPath(it, camera, true), WColors.Primary.copy(alpha = 0.10f))
+            }
         }
         hullLatLon?.takeIf { it.size >= 3 }?.let {
             drawPath(
@@ -573,6 +589,9 @@ private fun DrawScope.drawTarget(t: TargetCell, camera: MapCamera) {
 }
 
 private fun DrawScope.drawZone(z: WsMsg.Zone, camera: MapCamera) {
+    // v1.2：按归属队长着色，换队长后新老任务区一眼可分
+    val stroke = Color(ZoneStyle.stroke(z.by))
+    val fill = Color(ZoneStyle.fill(z.by, alpha = 0x1F))
     when (z.kind) {
         "CIRCLE" -> {
             val la = z.centerLat ?: return
@@ -582,7 +601,7 @@ private fun DrawScope.drawZone(z: WsMsg.Zone, camera: MapCamera) {
             val rPx = (r / camera.metersPerPixel).toFloat()
             if (rPx > 2f) {
                 drawCircle(
-                    WColors.Secondary.copy(alpha = 0.9f), radius = rPx, center = o,
+                    stroke.copy(alpha = 0.9f), radius = rPx, center = o,
                     style = Stroke(
                         width = 2.dp.toPx(),
                         pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 8f)),
@@ -595,9 +614,9 @@ private fun DrawScope.drawZone(z: WsMsg.Zone, camera: MapCamera) {
                 if (p.size >= 2) p[0] to p[1] else null
             }
             if (pts.size >= 3) {
-                drawPath(ringPath(pts, camera, true), WColors.Secondary.copy(alpha = 0.08f))
+                drawPath(ringPath(pts, camera, true), fill)
                 drawPath(
-                    ringPath(pts, camera, true), WColors.Secondary,
+                    ringPath(pts, camera, true), stroke,
                     style = Stroke(
                         width = 2.dp.toPx(),
                         pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 8f)),

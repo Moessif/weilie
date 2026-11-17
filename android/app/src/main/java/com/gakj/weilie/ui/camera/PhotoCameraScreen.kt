@@ -174,6 +174,7 @@ private data class WatermarkSpec(
     val address: String,
     val cellLines: List<String>,
     val hasFix: Boolean,
+    val manualLocation: Boolean = false,
 )
 
 /** 水印文字阴影：亮景下白字也要看得清（屏幕 / 烧图同一观感） */
@@ -183,6 +184,7 @@ private val WmShadowStyle = TextStyle(
 
 private const val WM_LABEL = "围猎 · 现场数据"
 private const val WM_NO_FIX = "未获取到定位，标记将落在近似点"
+private const val WM_MANUAL_LOC = "位置：手动选点（非 GPS）"
 private const val WM_RESOLVING = "定位解析中…"
 private const val WM_FALLBACK_TITLE = "现场取证"
 
@@ -217,6 +219,8 @@ fun PhotoCameraScreen(
     currentLat: Double,
     currentLon: Double,
     hasFix: Boolean,
+    /** 位置是手动在地图上选的（非 GPS），水印必须标注，避免取证误导 */
+    manualLocation: Boolean = false,
     taskId: String = "",
     onClose: () -> Unit,
     onCaptured: (PhotoRecord) -> Unit,
@@ -508,6 +512,7 @@ fun PhotoCameraScreen(
             address = addressLine,
             hasFix = hasFix,
             cellLines = cellLines,
+            manualLocation = manualLocation,
         )
     }
 
@@ -546,6 +551,7 @@ fun PhotoCameraScreen(
             address = addressLine,
             hasFix = hasFix,
             cellLines = cellLines,
+            manualLocation = manualLocation,
         )
         val lines = buildWatermarkLines(shotSpec)
         val note = if (titleEdited) wmTitle else ""
@@ -972,6 +978,16 @@ private fun WatermarkBlock(
             overflow = TextOverflow.Ellipsis,
             style = WmShadowStyle,
         )
+        if (spec.manualLocation) {
+            Spacer(Modifier.height(Space.x1))
+            Text(
+                text = WM_MANUAL_LOC,
+                color = Color(0xFFFBBF24),
+                fontSize = 11.sp,
+                lineHeight = 14.sp,
+                style = WmShadowStyle,
+            )
+        }
         Spacer(Modifier.height(Space.x2))
 
         // 蜂窝技术块（CellWatermark.flatLines 原样输出）
@@ -1118,6 +1134,7 @@ private fun buildWatermarkSpec(
     address: String,
     hasFix: Boolean,
     cellLines: List<String>,
+    manualLocation: Boolean = false,
 ): WatermarkSpec {
     val date = SimpleDateFormat("yyyy-MM-dd", Locale.CHINA).format(Date(ts))
     val weekday = SimpleDateFormat("EEEE", Locale.CHINA).format(Date(ts))
@@ -1130,6 +1147,7 @@ private fun buildWatermarkSpec(
         address = address.ifBlank { WM_RESOLVING },
         cellLines = cellLines,
         hasFix = hasFix,
+        manualLocation = manualLocation,
     )
 }
 
@@ -1144,6 +1162,7 @@ private fun buildWatermarkLines(spec: WatermarkSpec): List<String> {
     out += spec.date
     out += spec.weekdayWeather
     out += spec.address
+    if (spec.manualLocation) out += WM_MANUAL_LOC
     out += WM_LABEL
     out += spec.cellLines
     if (!spec.hasFix) out += WM_NO_FIX

@@ -423,7 +423,10 @@ fun ToolboxSheet(
                         },
                     )
                     Spacer(Modifier.height(4.dp))
-                    ToolId.entries.chunked(5).forEach { rowTools ->
+                    // 小屏 5 列会把「切换基站/数据导出」挤成「切基站/数据导」，
+            // 320dp 宽时降为 4 列（v0.13.4）
+            val gridCols = if (LocalConfiguration.current.screenWidthDp < 360) 4 else 5
+            ToolId.entries.chunked(gridCols).forEach { rowTools ->
                         Row(Modifier.fillMaxWidth()) {
                             rowTools.forEach { t ->
                                 Box(Modifier.weight(1f)) {
@@ -445,7 +448,7 @@ fun ToolboxSheet(
                                     )
                                 }
                             }
-                            repeat(5 - rowTools.size) { Spacer(Modifier.weight(1f)) }
+                            repeat(gridCols - rowTools.size) { Spacer(Modifier.weight(1f)) }
                         }
                         Spacer(Modifier.height(4.dp))
                     }

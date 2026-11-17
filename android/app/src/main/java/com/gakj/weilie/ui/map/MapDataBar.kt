@@ -38,6 +38,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -65,15 +66,18 @@ import com.gakj.weilie.ui.theme.WColors
 /**
  * 数据栏槽位：可由用户点击切换的 8 种指标。
  */
+// 标签列宽：76dp 在 320dp 屏 + 1.25 倍字体下会把「主区信号」挤成两行，收到 72dp 并强制单行
+private val LabelWidth = 72.dp
+
 enum class DataSlot(val label: String) {
     TARGET("追踪目标"),
-    SIGNAL("服务小区信号"),
+    SIGNAL("主区信号"),
     SINR("信噪比"),
     NEIGHBORS("邻区数"),
     WIFI("WiFi 数"),
     COORDS("坐标"),
     DURATION("采集时长"),
-    SAMPLES("样本计数"),
+    SAMPLES("样本数"),
 }
 
 /**
@@ -133,6 +137,8 @@ fun MapDataBar(
     modifier: Modifier = Modifier,
     expertMode: Boolean = false,
     onExpertModeChange: (Boolean) -> Unit = {},
+    /** 小屏精简（由调用方按实际窗口高度判断，避免 LocalConfiguration 在 wm size 覆盖下失真） */
+    compact: Boolean = false,
 ) {
     var slotTop by remember { mutableStateOf(DataSlot.TARGET) }
     var slotBottom by remember { mutableStateOf(DataSlot.SIGNAL) }
@@ -141,6 +147,9 @@ fun MapDataBar(
     var pickingSlot by remember { mutableStateOf<DataSlot?>(null) }
     var showServingFull by remember { mutableStateOf(false) }
     var showNeighborList by remember { mutableStateOf(false) }
+
+    // 小屏精简由调用方传入（按窗口约束判断），这里不再读 LocalConfiguration
+    val compactBar = compact
 
     Column(modifier) {
         Column(
@@ -159,7 +168,7 @@ fun MapDataBar(
                     ),
                     Radius.lgShape,
                 )
-                .padding(horizontal = Space.x4, vertical = Space.x3),
+                .padding(start = Space.x4, end = Space.x4 + if (compactBar) 44.dp else 0.dp, top = Space.x3, bottom = Space.x3),
         ) {
             // ---------- 第一行：追踪目标（槽位可切换） + 展开按钮 ----------
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -292,6 +301,7 @@ fun MapDataBar(
                             carrierText = carrierText,
                             ratText = ratText,
                             sims = sims,
+                            compact = compactBar,
                             servingText = servingText,
                             showServingFull = showServingFull,
                             onToggleServing = { showServingFull = !showServingFull },
@@ -404,7 +414,9 @@ private fun SlotCell(
             slot.label,
             style = MaterialTheme.typography.labelSmall,
             color = WColors.OnBgDim,
-            modifier = Modifier.width(76.dp),
+            modifier = Modifier.width(LabelWidth),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
         when (slot) {
             DataSlot.TARGET -> {
@@ -516,16 +528,20 @@ private fun NormalContent(
     onToggleNeighbors: () -> Unit,
     confidenceText: String?,
     running: Boolean,
+    /** 小屏精简：隐藏双卡明细与邻区/置信度附加行，把数据栏高度压下来（v0.13.5） */
+    compact: Boolean = false,
 ) {
     Column {
         // 网络归属：有双卡明细时由每张卡自己交代（避免同一信息出现两遍）
-        if (sims.isEmpty()) {
+        if (sims.isEmpty() || compact) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     "网络",
                     style = MaterialTheme.typography.labelSmall,
                     color = WColors.OnBgDim,
-                    modifier = Modifier.width(76.dp),
+                    modifier = Modifier.width(LabelWidth),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
                 )
                 Text(
                     "$carrierText · $ratText",
@@ -547,7 +563,9 @@ private fun NormalContent(
                     "信号",
                     style = MaterialTheme.typography.labelSmall,
                     color = WColors.OnBgDim,
-                    modifier = Modifier.width(76.dp),
+                    modifier = Modifier.width(LabelWidth),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
                 )
                 SignalBars(level)
                 Spacer(Modifier.width(8.dp))
@@ -594,6 +612,8 @@ private fun NormalContent(
             }
         }
 
+        // 小屏精简：邻区行与置信度行收进「详情」，避免数据栏把图层面板顶到屏外（v0.13.5）
+        if (!compact) {
         Spacer(Modifier.height(Space.x1))
         Row(
             Modifier
@@ -642,7 +662,9 @@ private fun NormalContent(
                     "拟合置信度",
                     style = MaterialTheme.typography.labelSmall,
                     color = WColors.OnBgDim,
-                    modifier = Modifier.width(76.dp),
+                    modifier = Modifier.width(LabelWidth),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
                 )
                 Text(
                     confidenceText,
@@ -651,6 +673,7 @@ private fun NormalContent(
                 )
             }
         }
+        } // 小屏精简结束
     }
 }
 
@@ -668,7 +691,9 @@ private fun SimRow(s: com.gakj.weilie.core.telephony.SimCell) {
             s.slotLabel,
             style = MaterialTheme.typography.labelSmall,
             color = WColors.OnBgDim,
-            modifier = Modifier.width(76.dp),
+            modifier = Modifier.width(LabelWidth),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
         Column(Modifier.weight(1f)) {
             Text(

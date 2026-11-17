@@ -21,6 +21,7 @@ dependencies {
     implementation("io.ktor:ktor-server-websockets-jvm:$ktorVersion")
     implementation("io.ktor:ktor-server-content-negotiation-jvm:$ktorVersion")
     implementation("io.ktor:ktor-serialization-kotlinx-json-jvm:$ktorVersion")
+    implementation("io.ktor:ktor-server-status-pages-jvm:$ktorVersion")
 
     // kotlinx.serialization 运行时（与 Android 客户端同为 1.7.3，协议可互相序列化）
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
@@ -28,10 +29,16 @@ dependencies {
     // 日志实现
     implementation("ch.qos.logback:logback-classic:1.5.12")
 
+    // 管理平台数据库：SQLite（单文件、WAL、零运维；数据目录 data/admin.db）
+    implementation("org.xerial:sqlite-jdbc:3.46.1.3")
+
     // 测试
     testImplementation(kotlin("test"))
     // useJUnitPlatform() 需要引擎在测试运行时类路径上
     testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine:5.10.2")
+    // 管理接口的路由级集成测试
+    testImplementation("io.ktor:ktor-server-test-host-jvm:$ktorVersion")
+    testImplementation("io.ktor:ktor-client-content-negotiation-jvm:$ktorVersion")
 }
 
 // 固定 JDK 17（与客户端工具链一致）；本机 JAVA_HOME 已指向 JDK17 时直接复用

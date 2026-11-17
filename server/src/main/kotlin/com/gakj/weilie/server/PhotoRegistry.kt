@@ -135,6 +135,9 @@ class PhotoRegistry(dataDir: Path) {
 
     fun byCode(code: String): PhotoEntry? = synchronized(lock) { byCode[code] }
 
+    /** 管理站列表用：按登记顺序返回全部记录（调用方负责分页/筛选）。 */
+    fun all(): List<PhotoEntry> = synchronized(lock) { byCode.values.toList() }
+
     /** 生成签名（服务端与校验共用同一段消息拼接，顺序不可改） */
     private fun sign(code: String, sha256: String, serverTs: Long, ts: Long, lat: Double, lon: Double): String {
         val message = "$code:$sha256:$serverTs:$ts:$lat:$lon"

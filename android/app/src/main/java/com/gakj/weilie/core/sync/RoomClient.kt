@@ -30,6 +30,9 @@ class RoomClient(
     private val scope: CoroutineScope,
     private val baseUrl: String, // ws://host:port
 ) {
+    /** v1.4：入房令牌；由调用方先换取再 connect（不填则保持旧行为） */
+    @Volatile
+    var token: String = ""
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private val client by lazy {
         HttpClient(CIO) { install(io.ktor.client.plugins.websocket.WebSockets) }
@@ -52,6 +55,14 @@ class RoomClient(
     var onAudioStart: ((WsMsg.AudioStart) -> Unit)? = null
     var onAudioChunk: ((WsMsg.AudioChunk) -> Unit)? = null
     var onAudioStop: ((WsMsg.AudioStop) -> Unit)? = null
+
+    /** v1.2：队员申请接任（只发给队长）与队长拒绝（只发给申请人） */
+    var onPromoteRequest: ((WsMsg.PromoteRequest) -> Unit)? = null
+    var onPromoteDecline: ((WsMsg.PromoteDecline) -> Unit)? = null
+
+    /** v1.10：任务区转移（请求发给目标；拒绝通知发起人） */
+    var onZoneTransferRequest: ((WsMsg.ZoneTransferRequest) -> Unit)? = null
+    var onZoneTransferDecline: ((WsMsg.ZoneTransferDecline) -> Unit)? = null
 
     @Volatile
     private var session: DefaultClientWebSocketSession? = null
@@ -81,8 +92,9 @@ class RoomClient(
             try {
                 _state.value = ConnState.CONNECTING
                 val h = hello ?: return
+                val tokenQuery = if (token.isBlank()) "" else "&token=$token"
                 val s = client.webSocketSession {
-                    url("$baseUrl/ws/room/${h.roomId}?userId=${h.userId}&name=${h.name}&role=${h.role}")
+                    url("$baseUrl/ws/room/${h.roomId}?userId=${h.userId}&name=${h.name}&role=${h.role}$tokenQuery")
                 }
                 session = s
                 _state.value = ConnState.CONNECTED
@@ -134,6 +146,10 @@ class RoomClient(
                 is WsMsg.AudioStart -> onAudioStart?.invoke(msg)
                 is WsMsg.AudioChunk -> onAudioChunk?.invoke(msg)
                 is WsMsg.AudioStop -> onAudioStop?.invoke(msg)
+                is WsMsg.PromoteRequest -> onPromoteRequest?.invoke(msg)
+                is WsMsg.PromoteDecline -> onPromoteDecline?.invoke(msg)
+                is WsMsg.ZoneTransferRequest -> onZoneTransferRequest?.invoke(msg)
+                is WsMsg.ZoneTransferDecline -> onZoneTransferDecline?.invoke(msg)
                 is WsMsg.Pong -> Unit
                 is WsMsg.Bye -> Unit
                 is WsMsg.PhotoAck -> Unit
@@ -293,4 +309,31 @@ class RoomClient(
     /** 队长转让：请求服务端把 to 提升为 CAPTAIN（服务端校验发送者现任队长） */
     suspend fun promote(from: String, to: String) =
         send(WsMsg.Promote(from, to, System.currentTimeMillis()))
+
+    /** v1.2：队员申请接任队长（服务端只转发给现任队长） */
+    suspend fun promoteRequest(from: String, to: String) =
+        send(WsMsg.PromoteRequest(from, to, System.currentTimeMillis()))
+
+    /** v1.2：队长拒绝接任申请 */
+    suspend fun promoteDecline(from: String, to: String) =
+        send(WsMsg.PromoteDecline(from, to, System.currentTimeMillis()))
+
+    /** v1.2：删除任务区（创建者本人或现任队长有权） */
+    suspend fun zoneDelete(by: String, id: String) =
+        send(WsMsg.ZoneDelete(by, id, System.currentTimeMillis()))
+
+    /** v1.10：发起任务区转移（创建者或队长） */
+    suspend fun zoneTransferRequest(id: String, from: String, to: String) =
+        send(WsMsg.ZoneTransferRequest(id, from, to, System.currentTimeMillis()))
+
+    /** v1.10：接受/拒绝转移（仅目标本人） */
+    suspend fun zoneTransferAccept(id: String, by: String) =
+        send(WsMsg.ZoneTransferAccept(id, by, System.currentTimeMillis()))
+
+    suspend fun zoneTransferDecline(id: String, by: String) =
+        send(WsMsg.ZoneTransferDecline(id, by, System.currentTimeMillis()))
+
+    /** v1.10：清空全部任务区（队长） */
+    suspend fun zoneClear(by: String) =
+        send(WsMsg.ZoneClear(by, System.currentTimeMillis()))
 }

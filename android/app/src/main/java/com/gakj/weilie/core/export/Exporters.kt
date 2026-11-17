@@ -75,6 +75,11 @@ object GeoJsonExporter {
         hullLatLon: List<Pair<Double, Double>>?,
         bufferedLatLon: List<Pair<Double, Double>>?,
         isolines: List<List<Pair<Double, Double>>>,
+        // v0.13.3：内洞与面积，导出与界面同口径
+        holesLatLon: List<List<Pair<Double, Double>>> = emptyList(),
+        coverageAreaM2: Double? = null,
+        hullAreaM2: Double? = null,
+        engine: String? = null,
     ): String {
         val feats = StringBuilder()
         for (s in samples) {
@@ -88,7 +93,17 @@ object GeoJsonExporter {
                 },
             )
         }
-        hullLatLon?.let { feats.appendFeature(ringToPolygon(it), """{"kind":"fitted_hull"}""") }
+        hullLatLon?.let { ring ->
+            val props = buildString {
+                append("{\"kind\":\"fitted_hull\"")
+                append(""","holes":""").append(holesLatLon.size)
+                if (coverageAreaM2 != null) append(""","area_m2":""").append("%.0f".format(coverageAreaM2))
+                if (hullAreaM2 != null) append(""","hull_area_m2":""").append("%.0f".format(hullAreaM2))
+                if (!engine.isNullOrBlank()) append(""","engine":""").append('"').append(engine).append('"')
+                append("}")
+            }
+            feats.appendFeature(polygonWithHoles(ring, holesLatLon), props)
+        }
         bufferedLatLon?.let { feats.appendFeature(ringToPolygon(it), """{"kind":"fitted_buffered"}""") }
         isolines.forEachIndexed { i, line ->
             if (line.size >= 2) {
@@ -105,6 +120,24 @@ object GeoJsonExporter {
         return """{"type":"FeatureCollection","features":[${feats}]}"""
     }
 
+    /** 多环 Polygon：第一个环是外环，其余是洞（RFC 7946 要求逆时针外环、顺时针洞，这里只保证闭合） */
+    private fun polygonWithHoles(
+        outer: List<Pair<Double, Double>>,
+        holes: List<List<Pair<Double, Double>>>,
+    ): String {
+        if (outer.size < 3) return """{"type":"Polygon","coordinates":[]}"""
+        val rings = ArrayList<String>(1 + holes.size)
+        rings.add(closedRingJson(outer))
+        holes.forEach { h -> if (h.size >= 3) rings.add(closedRingJson(h)) }
+        return """{"type":"Polygon","coordinates":[${rings.joinToString(",")}]}"""
+    }
+
+    private fun closedRingJson(ring: List<Pair<Double, Double>>): String {
+        val closed = ring.first() != ring.last()
+        val pts = ring + if (closed) listOf(ring.first()) else emptyList()
+        return "[" + pts.joinToString(",") { (lat, lon) -> "[${"%.7f".format(lon)},${"%.7f".format(lat)}]" } + "]"
+    }
+
     private fun ringToPolygon(ring: List<Pair<Double, Double>>): String {
         if (ring.size < 3) return """{"type":"Polygon","coordinates":[]}"""
         val closed = ring.first() != ring.last()
@@ -114,6 +147,8 @@ object GeoJsonExporter {
     }
 
     private fun StringBuilder.appendFeature(geom: String, props: String) {
+        // 多个要素之间必须有逗号，否则输出不是合法 JSON（v0.13.3 修复）
+        if (isNotEmpty()) append(',')
         append("""{"type":"Feature","geometry":""")
         append(geom)
         append(""","properties":""")
@@ -130,6 +165,11 @@ object KmlExporter {
         samples: List<SampleRecord>,
         hullLatLon: List<Pair<Double, Double>>?,
         isolines: List<List<Pair<Double, Double>>>,
+        // v0.13.3：内洞与面积
+        holesLatLon: List<List<Pair<Double, Double>>> = emptyList(),
+        coverageAreaM2: Double? = null,
+        hullAreaM2: Double? = null,
+        engine: String? = null,
     ): String = buildString {
         appendLine("""<?xml version="1.0" encoding="UTF-8"?>""")
         appendLine("""<kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>${title.xmlEscape()}</name>""")
@@ -148,8 +188,21 @@ object KmlExporter {
         }
         hullLatLon?.let { ring ->
             val coords = ring.joinToString(" ") { (lat, lon) -> "${"%.7f".format(lon)},${"%.7f".format(lat)},0" }
-            appendLine("""<Placemark><name>拟合边界</name><Style><PolyStyle><color>7f00b050</color></PolyStyle></Style>""")
-            appendLine("""<Polygon><outerBoundaryIs><LinearRing><coordinates>$coords</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>""")
+            val desc = buildString {
+                coverageAreaM2?.let { append("覆盖面积 %.0f m²；".format(it)) }
+                hullAreaM2?.let { append("外环面积 %.0f m²；".format(it)) }
+                append("内洞 ${holesLatLon.size} 个；")
+                if (!engine.isNullOrBlank()) append("引擎 $engine")
+            }.trimEnd('；')
+            appendLine("""<Placemark><name>拟合边界</name><description>$desc</description><Style><PolyStyle><color>7f00b050</color></PolyStyle></Style>""")
+            append("""<Polygon><outerBoundaryIs><LinearRing><coordinates>$coords</coordinates></LinearRing></outerBoundaryIs>""")
+            holesLatLon.forEach { hole ->
+                if (hole.size >= 3) {
+                    val hc = hole.joinToString(" ") { (lat, lon) -> "${"%.7f".format(lon)},${"%.7f".format(lat)},0" }
+                    append("""<innerBoundaryIs><LinearRing><coordinates>$hc</coordinates></LinearRing></innerBoundaryIs>""")
+                }
+            }
+            appendLine("</Polygon></Placemark>")
         }
         isolines.forEachIndexed { i, line ->
             if (line.size >= 2) {

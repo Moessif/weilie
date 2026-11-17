@@ -82,7 +82,7 @@ fun SessionDetailScreen(taskId: String, onBack: () -> Unit) {
         samples = s
         if (s.size >= 8) {
             fit = withContext(Dispatchers.Default) {
-                CoverageFitter.fit(s, CoverageFitter.Options())
+                CoverageFitter.fit(s, CoverageFitter.Options(computeStability = true))
             }
         }
         if (s.isNotEmpty()) {
@@ -144,6 +144,7 @@ fun SessionDetailScreen(taskId: String, onBack: () -> Unit) {
                         samples = shown,
                         hullLatLon = if (replayIdx >= samples.size) fit?.hullLatLon else null,
                         bufferedLatLon = if (replayIdx >= samples.size) fit?.bufferedLatLon else null,
+                        holesLatLon = if (replayIdx >= samples.size) fit?.holesLatLon ?: emptyList() else emptyList(),
                         isolines = if (replayIdx >= samples.size) fit?.isolineLoopsLatLon ?: emptyList() else emptyList(),
                         camera = camera,
                     )
@@ -206,7 +207,24 @@ fun SessionDetailScreen(taskId: String, onBack: () -> Unit) {
                 Spacer(Modifier.height(Space.x3))
                 KeyValueRow("轨迹长度", "%.0f 米".format(distM))
                 fit?.confidence?.let { c ->
-                    KeyValueRow("拟合置信度", "${c.level.name} · ${c.score0to100} 分 · 均误差 %.0f 米".format(c.meanAccuracyM))
+                    val reason = c.reasons.firstOrNull()
+                    val suffix = if (reason.isNullOrBlank()) "" else " · $reason"
+                    KeyValueRow(
+                        "拟合置信度",
+                        "${c.level.name} · ${c.score0to100} 分 · 均误差 %.0f 米".format(c.meanAccuracyM) + suffix,
+                    )
+                    KeyValueRow("拟合引擎", "${fit?.engine?.label} · ${fit?.engineReason}")
+                    if (fit?.unstable == true) {
+                        KeyValueRow("拟合稳定性", "两个引擎面积差较大，建议补测", WColors.Warning)
+                    }
+                    fit?.let { f ->
+                        val areaText = if (f.holesAreaM2 > 1.0) {
+                            "%.0f m²（外环 %.0f − 洞 %.0f）".format(f.coverageAreaM2, f.hullAreaM2, f.holesAreaM2)
+                        } else {
+                            "%.0f m²".format(f.coverageAreaM2)
+                        }
+                        KeyValueRow("覆盖面积", areaText, WColors.Primary)
+                    }
                     KeyValueRow("参与拟合", "${fit?.inlierCount} / ${fit?.totalSamples} 点")
                 }
                 m?.targetRawInput?.let { KeyValueRow("目标输入", prettyRawInput(it), WColors.Primary) }

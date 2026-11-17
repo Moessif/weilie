@@ -40,6 +40,8 @@ data class TheoryShape(
 /** 封闭区域（实测有效点凹包 / 条带兜底） */
 data class ClosedArea(
     val ring: List<Pair<Double, Double>>,
+    /** 内洞（环绕走位时中间没走过的区域）；v0.13.3 */
+    val holes: List<List<Pair<Double, Double>>> = emptyList(),
     val fillColor: Int = 0x5534D399,
     val strokeColor: Int = 0xCC34D399.toInt(),
     val label: String = "实测覆盖区",

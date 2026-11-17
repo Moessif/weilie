@@ -47,9 +47,32 @@ class RoomState(
     @Volatile
     var captainUserId: String? = null
 
+    /** v1.3：最近一次活动时间，供 TTL 清理 */
+    @Volatile
+    var lastActiveAt: Long = createdAt
+
+    /** 采样点环形缓存（v1.2）：用于统计任务区完成度；超出上限丢弃最旧的 */
+    val samples = CopyOnWriteArrayList<WsMsg.SamplePing>()
+
+    /** 待处理的队长接任申请（v1.2）：同一时刻只保留一条 */
+    @Volatile
+    var pendingPromote: WsMsg.PromoteRequest? = null
+
+    /** zoneId -> 最近一次算出的完成度（v1.2） */
+    val zoneStats = ConcurrentHashMap<String, WsMsg.ZoneStat>()
+
     companion object {
         /** 聊天历史上限 */
         const val MAX_CHAT_HISTORY = 200
+
+        /** 采样缓存上限（约 8 小时 × 1s 的心跳，足够统计用） */
+        const val MAX_SAMPLES = 20_000
+
+        /** 标点数量上限（安全加固：防止单连接无限刷标点把 state 快照撑爆） */
+        const val MAX_MARKERS = 2_000
+
+        /** 未删除任务区上限 */
+        const val MAX_ZONES = 200
     }
 }
 
@@ -107,14 +130,37 @@ class RoomStore(private val dataDir: Path) {
 
     fun roomCount(): Int = rooms.size
 
+    /** v1.3：运维接口用的房间快照列表 */
+    fun allRooms(): List<RoomState> = rooms.values.toList()
+
+    /** v1.3：关闭房间（连同邀请码索引一起移除） */
+    fun removeRoom(roomId: String): Boolean {
+        val room = rooms.remove(roomId) ?: return false
+        codeIndex.remove(room.joinCode)
+        return true
+    }
+
+    /** v1.3：清理长时间无活动的房间，返回清理数量 */
+    fun purgeIdle(ttlMs: Long): List<RoomState> {
+        val now = System.currentTimeMillis()
+        val idle = rooms.values.filter { now - it.lastActiveAt > ttlMs }
+        return idle.filter { removeRoom(it.roomId) }
+    }
+
     /** 当前在线会话总数（未发 hello 的连接不计入） */
     fun onlineMemberCount(): Int = rooms.values.sumOf { it.sessions.size }
 
-    /** 6 位数字邀请码，类锁保证不重复 */
+    /**
+     * 邀请码（v1.12）：由 6 位纯数字改为 8 位字母数字（去易混字符），
+     * 熵从 10^6 提到约 32^8 ≈ 1.1e12，显著抬高枚举难度。
+     * 旧房间的 6 位数字码仍可被 [findByCode] 命中，兼容未升级客户端。
+     */
     private fun randomJoinCode(): String {
         var code: String
         do {
-            code = Random.nextInt(1_000_000).toString().padStart(6, '0')
+            code = buildString(JOIN_CODE_LENGTH) {
+                repeat(JOIN_CODE_LENGTH) { append(JOIN_CODE_ALPHABET[joinCodeRandom.nextInt(JOIN_CODE_ALPHABET.length)]) }
+            }
         } while (codeIndex.containsKey(code))
         return code
     }
@@ -189,3 +235,8 @@ class RoomStore(private val dataDir: Path) {
         }
     }
 }
+
+// v1.12（审计 M3）：邀请码使用 8 位字母数字（去掉易混的 0/O/1/I），并由 SecureRandom 生成。
+private const val JOIN_CODE_LENGTH = 8
+private const val JOIN_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+private val joinCodeRandom = java.security.SecureRandom()

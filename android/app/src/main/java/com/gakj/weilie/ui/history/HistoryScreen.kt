@@ -44,6 +44,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -95,7 +96,7 @@ fun HistoryScreen(onBack: () -> Unit, onOpenSession: (String) -> Unit) {
     var request by remember { mutableStateOf<DeleteRequest?>(null) }
 
     LaunchedEffect(reload) {
-        sessions = AppGraph.store.listSessions()
+        sessions = AppGraph.store.purgeTeamSessions(14).let { AppGraph.store.listSessions(includeTeam = true) }
         // 列表清空后自动退出选择模式，避免"已选 1 项但列表是空的"
         if (sessions.isEmpty()) {
             selectMode = false
@@ -318,12 +319,27 @@ private fun SessionCard(
             }
             Spacer(Modifier.width(Space.x3))
             Column(Modifier.weight(1f)) {
-                Text(
-                    m.title.ifBlank { "未命名任务" },
-                    style = MaterialTheme.typography.titleMedium,
-                    color = WColors.OnBg,
-                    maxLines = 1,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        m.title.ifBlank { "未命名任务" },
+                        style = MaterialTheme.typography.titleMedium,
+                        color = WColors.OnBg,
+                        maxLines = 1,
+                    )
+                    // v0.16：团队会话单独标注，避免与单人任务混淆
+                    if (m.taskId.startsWith("team-")) {
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            "团队",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = WColors.Primary,
+                            modifier = Modifier
+                                .clip(Radius.pillShape)
+                                .background(WColors.Primary.copy(alpha = 0.14f))
+                                .padding(horizontal = 6.dp, vertical = 1.dp),
+                        )
+                    }
+                }
                 Spacer(Modifier.height(Space.x1))
                 Text(
                     metaText(m),

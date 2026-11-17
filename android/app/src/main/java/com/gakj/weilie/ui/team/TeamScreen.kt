@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import com.gakj.weilie.ui.AppGraph
 import com.gakj.weilie.ui.Route
 import com.gakj.weilie.ui.common.GlassTextField
+import com.gakj.weilie.ui.common.HelpHint
 import com.gakj.weilie.ui.common.GlassTextButton
 import com.gakj.weilie.ui.common.ScreenTopBar
 import com.gakj.weilie.ui.common.randomRoomCode
@@ -76,6 +77,8 @@ fun TeamScreen(onBack: () -> Unit, onScan: () -> Unit, onJoined: (String) -> Uni
     val ctx = LocalContext.current
     var nickname by remember { mutableStateOf(AppGraph.prefs.getString(Route.PREF_NICKNAME, "") ?: "") }
     var server by remember { mutableStateOf(AppGraph.prefs.getString(Route.PREF_SERVER, "") ?: "") }
+    // v0.16：团队任务目标（可选），留空则团队模式不判定命中
+    var teamTarget by remember { mutableStateOf(AppGraph.prefs.getString(Route.PREF_TEAM_TARGET, "") ?: "") }
     LaunchedEffect(Unit) { if (server.isBlank()) server = AppGraph.DEFAULT_SERVER }
     var code by remember { mutableStateOf(AppGraph.lastJoinCode ?: "") }
     var role by remember { mutableStateOf("MEMBER") } // 加入身份 MEMBER / OBSERVER
@@ -125,6 +128,7 @@ fun TeamScreen(onBack: () -> Unit, onScan: () -> Unit, onJoined: (String) -> Uni
                         AppGraph.prefs.edit()
                             .putString(Route.PREF_NICKNAME, nickname.trim())
                             .putString(Route.PREF_SERVER, base)
+                            .putString(Route.PREF_TEAM_TARGET, teamTarget.trim())
                             .apply()
                         AppGraph.lastJoinCode = joinCode ?: randomRoomCode()
                         AppGraph.lastRole = createRole
@@ -174,6 +178,7 @@ fun TeamScreen(onBack: () -> Unit, onScan: () -> Unit, onJoined: (String) -> Uni
                         AppGraph.prefs.edit()
                             .putString(Route.PREF_NICKNAME, nickname.trim())
                             .putString(Route.PREF_SERVER, base)
+                            .putString(Route.PREF_TEAM_TARGET, teamTarget.trim())
                             .apply()
                         AppGraph.lastJoinCode = c
                         AppGraph.lastRole = role
@@ -223,6 +228,35 @@ fun TeamScreen(onBack: () -> Unit, onScan: () -> Unit, onJoined: (String) -> Uni
                     style = MaterialTheme.typography.labelSmall,
                     color = WColors.OnBgDim,
                 )
+                Spacer(Modifier.height(10.dp))
+                // v0.16：团队任务目标（可选）。填了才能判定「命中目标」，留空则团队只记录轨迹
+                GlassTextField(
+                    value = teamTarget,
+                    onValueChange = {
+                        teamTarget = it
+                        AppGraph.prefs.edit().putString(Route.PREF_TEAM_TARGET, it.trim()).apply()
+                    },
+                    label = "团队目标（可选）",
+                    placeholder = "ECI 123456789 / NCI ... / 经纬度 R=800",
+                    mono = true,
+                )
+                Spacer(Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    HelpHint(
+                        title = "团队目标怎么填",
+                        sections = listOf(
+                            "作用" to "只有填了目标小区，队员才会被判定「是否命中目标」；留空则团队模式只记录轨迹，不判定命中。",
+                            "格式" to "支持 ECI 123456789、NCI 460-1-90129-437449092、31.2304 121.4737 R=800 等写法，与单人模式一致。",
+                            "注意" to "目标由队长统一填写，队员进房即可继承；走测过程中可随时在协同首页修改。",
+                        ),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "示例：ECI 123456789、NCI 460-1-...、31.2304 121.4737 R=800",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = WColors.OnBgDim,
+                    )
+                }
             }
         }
         Spacer(Modifier.height(Space.x4))

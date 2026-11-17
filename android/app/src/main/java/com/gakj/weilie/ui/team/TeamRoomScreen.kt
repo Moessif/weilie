@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -48,6 +49,8 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
@@ -60,6 +63,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -86,13 +90,17 @@ import com.gakj.weilie.core.cellmap.CellLibraryClient
 import com.gakj.weilie.core.cellmap.CellSite as KnownCell
 import com.gakj.weilie.core.cellmap.SectorZones
 import com.gakj.weilie.core.fitting.AreaBuilder
+import com.gakj.weilie.core.fitting.CoverageFitter
+import com.gakj.weilie.core.fitting.CoverageResult
 import com.gakj.weilie.core.fitting.TrackBufferArea
 import com.gakj.weilie.core.fitting.Geo
 import com.gakj.weilie.core.fitting.ConvexHull
 import com.gakj.weilie.core.sync.ConnState
 import com.gakj.weilie.core.sync.MemberView
 import com.gakj.weilie.core.audio.VoiceTalk
+import com.gakj.weilie.core.model.SampleRecord
 import com.gakj.weilie.core.sync.RoomClient
+import com.gakj.weilie.core.sync.TeamToken
 import com.gakj.weilie.core.sync.WsMsg
 import com.gakj.weilie.service.SamplingForegroundService
 import com.gakj.weilie.ui.AppGraph
@@ -103,6 +111,10 @@ import com.gakj.weilie.ui.common.GlassIconButton
 import com.gakj.weilie.ui.common.GlassTextButton
 import com.gakj.weilie.ui.common.hasLocationPermission
 import com.gakj.weilie.ui.common.navigateTo
+import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.PlayArrow
+import com.gakj.weilie.ui.ai.AiSheet
+import com.gakj.weilie.ui.common.shareFile
 import com.gakj.weilie.ui.common.toast
 import com.gakj.weilie.ui.map.MapCanvas
 import com.gakj.weilie.ui.map.MapCamera
@@ -135,6 +147,7 @@ import kotlinx.coroutines.withContext
  * 队长可矩形划分任务区分块下发与转让身份；观战只读。
  */
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
     val ctx = LocalContext.current
     val userId = remember { AppGraph.userId() }
@@ -155,23 +168,28 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
 
     // QA-07：协同地图自己也要有采集控制器——否则没有定位来源，队友位置/采样/轨迹全是空的
     // （原实现只读 AppGraph.currentController，而它只在单人地图页被创建）
-    val controller = remember(roomId) { AppGraph.ensure(ctx, "team-$roomId", null) }
+    val controller = remember(roomId) { AppGraph.ensure(ctx, "team-$roomId", AppGraph.teamTask()) }
     val samples by controller.samples.collectAsState()
     var locGranted by remember { mutableStateOf(hasLocationPermission(ctx)) }
-    fun beginSampling() {
-        if (!locGranted) return
-        runCatching { controller.start() }
-        runCatching { SamplingForegroundService.start(ctx) }
-    }
+    // v1.2：采集是否在跑由「实时角色」决定，角色变化时自动启停（转让队长后无需退出重进）
+    var samplingOn by remember { mutableStateOf(false) }
+    var paused by remember { mutableStateOf(false) }
+    var showAi by remember { mutableStateOf(false) }
+    var confirmEnd by remember { mutableStateOf(false) }
+    // v1.10：任务区转移
+    var transferZone by remember { mutableStateOf<WsMsg.Zone?>(null) }
+    var incomingTransfer by remember { mutableStateOf<WsMsg.ZoneTransferRequest?>(null) }
+    var confirmClearZones by remember { mutableStateOf(false) }
     val locPermLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         locGranted = granted
-        if (granted) beginSampling()
     }
     DisposableEffect(controller) {
-        beginSampling()
         onDispose {
-            runCatching { SamplingForegroundService.stop(ctx) }
-            runCatching { controller.stop() }
+            if (samplingOn) {
+                runCatching { SamplingForegroundService.stop(ctx) }
+                runCatching { controller.stop() }
+            }
+            // v0.16：团队会话保留，便于历史回看与导出（可在历史页手动删除）
         }
     }
     LaunchedEffect(Unit) {
@@ -182,8 +200,19 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
         AppGraph.currentRoom?.disconnect()
         RoomClient(AppGraph.appScope, wsBase.ifBlank { "ws://127.0.0.1:8080" }).also { AppGraph.currentRoom = it }
     }
-    DisposableEffect(roomId) {
+    // v1.4：先用队伍码换取短时效令牌，再连接；老服务端返回 404 时按旧方式连接
+    LaunchedEffect(roomId) {
+        val http = (AppGraph.prefs.getString(Route.PREF_SERVER, "") ?: "").trim().trimEnd('/')
+            .ifBlank { AppGraph.DEFAULT_SERVER }
+        val joinCode = AppGraph.lastJoinCode.orEmpty()
+        room.token = if (joinCode.isBlank()) {
+            ""
+        } else {
+            runCatching { TeamToken.fetch(http, roomId, joinCode, userId, name, role) }.getOrNull().orEmpty()
+        }
         room.connect(WsMsg.Hello(roomId = roomId, userId = userId, name = name, role = role))
+    }
+    DisposableEffect(roomId) {
         onDispose {
             room.disconnect()
             if (AppGraph.currentRoom === room) AppGraph.currentRoom = null
@@ -192,7 +221,28 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
 
     val conn by room.state.collectAsState()
     val state by room.room.collectAsState()
+    // v1.2：实时角色（服务端 state 为权威；未收到 State 前用入场角色兜底）
+    val myRole = state.members.firstOrNull { it.userId == userId }?.role ?: role
+    // 采集跟着角色走：观战不采；被提升为队长/队员后自动开始；角色回写供重进时握手
+    LaunchedEffect(myRole, locGranted, paused) {
+        val should = locGranted && myRole != "OBSERVER" && !paused
+        if (should && !samplingOn) {
+            runCatching { controller.start() }
+            runCatching { SamplingForegroundService.start(ctx) }
+            samplingOn = true
+        } else if (!should && samplingOn) {
+            runCatching { SamplingForegroundService.stop(ctx) }
+            runCatching { controller.stop() }
+            samplingOn = false
+        }
+        if (myRole.isNotBlank()) AppGraph.lastRole = myRole
+    }
     val chats by room.chats.collectAsState()
+    // v1.12：聊天未读（按到达顺序计数，避免设备与服务端时钟偏差导致漏计）
+    var unreadChats by remember(roomId) { mutableIntStateOf(0) }
+    var chatCursor by remember(roomId) { mutableIntStateOf(-1) }
+
+
     val camera = remember { MapCamera() }
     val scope = rememberCoroutineScope()
     var markerMenu by remember { mutableStateOf(false) }
@@ -204,7 +254,34 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
     var teammateVisible by remember { mutableStateOf(true) }
     var zoneVisible by remember { mutableStateOf(true) }
     var showTaskPanel by remember { mutableStateOf(false) }
+    // v1.2：任务列表（新/老/完成度/删除）与队长接任申请
+    var showTaskList by remember { mutableStateOf(false) }
+    var showExport by remember { mutableStateOf(false) }
+    var promoteRequest by remember { mutableStateOf<WsMsg.PromoteRequest?>(null) }
+    var deleteZone by remember { mutableStateOf<WsMsg.Zone?>(null) }
+    LaunchedEffect(room) {
+        room.onPromoteRequest = { promoteRequest = it }
+        room.onPromoteDecline = { toast(ctx, "队长拒绝了接任申请") }
+        room.onZoneTransferRequest = { incomingTransfer = it }
+        room.onZoneTransferDecline = { toast(ctx, "对方拒绝了任务转移") }
+    }
     var showChatPanel by remember { mutableStateOf(false) }
+    LaunchedEffect(chats, showChatPanel) {
+        if (chatCursor < 0) {
+            // 首次进入：历史消息全部视为已读
+            chatCursor = chats.size
+        } else if (chats.size > chatCursor) {
+            val added = chats.subList(chatCursor, chats.size)
+            if (!showChatPanel) {
+                unreadChats += added.count { it.from != userId && it.from != "system" }
+            }
+            chatCursor = chats.size
+        } else if (chats.size < chatCursor) {
+            chatCursor = chats.size
+        }
+        if (showChatPanel && unreadChats != 0) unreadChats = 0
+    }
+
     var showZoneDialog by remember { mutableStateOf(false) }
     var showSplitDialog by remember { mutableStateOf(false) }
     var transferTarget by remember { mutableStateOf<MemberView?>(null) }
@@ -249,6 +326,36 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
     var heatLayer by remember { mutableStateOf<HeatLayer?>(null) }
     var areaOn by remember { mutableStateOf(AppGraph.prefs.getBoolean(Route.PREF_AREA_ON, true)) }
     var areaResult by remember { mutableStateOf<AreaBuilder.Result?>(null) }
+    // v0.16：本人样本的覆盖拟合（面积/洞/置信度），让团队模式也有单人模式的统计口径
+    var myFit by remember { mutableStateOf<CoverageResult?>(null) }
+    LaunchedEffect(samples.size, samples.lastOrNull()?.tsEpochMs, areaOn) {
+        myFit = if (samples.size < 2) null else withContext(Dispatchers.Default) {
+            CoverageFitter.fit(samples)
+        }
+    }
+
+    // v1.8：服务端下发的全队合并采样（降采样），用于拟合「全队覆盖」
+    val teamPoints = remember(state.teamSamples) {
+        state.teamSamples.map { p ->
+            SampleRecord(
+                tsEpochMs = p.ts,
+                lat = p.lat,
+                lon = p.lon,
+                rsrp = p.rsrp,
+                onTarget = p.onTarget,
+                targetSeen = p.onTarget,
+            )
+        }
+    }
+    var teamFit by remember { mutableStateOf<CoverageResult?>(null) }
+    LaunchedEffect(teamPoints.size, teamPoints.lastOrNull()?.tsEpochMs) {
+        teamFit = if (teamPoints.size < 2) null else withContext(Dispatchers.Default) {
+            CoverageFitter.fit(teamPoints)
+        }
+    }
+    // 覆盖口径：本人 / 全队（点统计条切换）
+    var coverageScope by remember { mutableStateOf("self") }
+    val activeFit = if (coverageScope == "team") teamFit else myFit
     // 成面方式与单人模式共用同一套偏好（高精度凹包 / 模拟实测区域）
     var areaMode by remember {
         mutableStateOf(
@@ -351,6 +458,11 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
     // ---- 需求 4/5：标点/拍照「点击地图选具体位置」，不再默认落在地图中心 ----
     var placeMode by remember { mutableStateOf<String?>(null) } // FLAG / SUSPICIOUS / PHOTO
     var pickedLatLon by remember { mutableStateOf<Pair<Double, Double>?>(null) }
+    // v0.14.1：拍照/标记先选位置（当前位置 / 自定义位置）
+    var photoSheet by remember { mutableStateOf(false) }
+    var markSheet by remember { mutableStateOf(false) }
+    var markKind by remember { mutableStateOf("FLAG") } // FLAG / SUSPICIOUS / PHOTO
+    var manualPhoto by remember { mutableStateOf(false) } // 该张照片的位置是否手选（水印要标注）
     var navMarker by remember { mutableStateOf<WsMsg.Marker?>(null) }
     // 需求二：新标点先命名 + 选可见范围，再发出去
     var newMarkerAt by remember { mutableStateOf<Triple<Double, Double, String>?>(null) }
@@ -379,11 +491,13 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
     }
 
     LaunchedEffect(state.zones) {
-        if (state.zones.isNotEmpty()) localZones.clear()
+        // 服务端 state 是权威：任何一次下发都以服务端为准（含“全部被删”的情况）
+        localZones.clear()
     }
 
-    // 有采集控制器时同步上报自己的位置/状态
-    LaunchedEffect(controller) {
+    // 有采集控制器时同步上报自己的位置/状态（观战者只接收、不上报）
+    LaunchedEffect(controller, myRole) {
+        if (myRole == "OBSERVER") return@LaunchedEffect
         controller.samples.collect { list ->
             val s = list.lastOrNull() ?: return@collect
             room.maybeReportLoc(s.lat, s.lon, s.accuracyM?.toDouble(), s.onTarget, userId)
@@ -431,13 +545,10 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
 
     // 任务区显示：服务器 zones 为准，本地 localZones 仅作「已下发未回推」的乐观补差（协议 v1.1）
     val displayZones = remember(state.zones, localZones.size) {
-        state.zones + localZones.filter { lz ->
+        state.zones.filter { !it.deleted } + localZones.filter { lz ->
             state.zones.none { sz -> sz.ts == lz.ts && sz.note == lz.note }
         }
     }
-
-    // 队长/观战身份以服务器 members 为准，加入时的 role 仅作未收到 State 前的兜底（协议 v1.1）
-    val myRole = state.members.firstOrNull { it.userId == userId }?.role ?: role
 
     val (connText, connColor) = when (conn) {
         ConnState.CONNECTED -> "已连接" to WColors.Success
@@ -486,8 +597,19 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
             camera = camera,
             // 叠加图层（与单人模式同源：热力/封闭区域/基站库）
             heat = heatLayer.takeIf { heatOn },
+            // v0.16：优先用 CoverageFitter 的 hull（与单人模式同源，含洞），无拟合时回退 AreaBuilder
             area = if (areaOn) {
-                areaResult?.takeIf { it.kind != AreaBuilder.Kind.NONE }
+                activeFit?.let { f ->
+                    f.hullLatLon.takeIf { it.size >= 3 }?.let { ring ->
+                        ClosedArea(
+                            ring = ring,
+                            holes = f.holesLatLon,
+                            fillColor = 0x5522D3EE,
+                            strokeColor = 0xCC22D3EE.toInt(),
+                            label = "实测覆盖区",
+                        )
+                    }
+                } ?: areaResult?.takeIf { it.kind != AreaBuilder.Kind.NONE }
                     ?.let { ClosedArea(ring = it.ringLatLon, label = it.kind.label) }
             } else {
                 null
@@ -583,7 +705,8 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
                     onLibrarySearch = { showCellSearch = true },
                     onDismiss = { showLayers = false },
                     maxHeight = with(LocalDensity.current) {
-                        LocalConfiguration.current.screenHeightDp.dp - topChromePx.toDp() - 200.dp
+                        (LocalConfiguration.current.screenHeightDp.dp - topChromePx.toDp() - 200.dp)
+                            .coerceIn(200.dp, 640.dp)
                     },
                 )
             }
@@ -629,7 +752,26 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             GlassIconButton(icon = Icons.Rounded.Assignment, label = "任务", size = 44.dp, onMap = true) { showTaskPanel = !showTaskPanel }
-            GlassIconButton(icon = Icons.Rounded.ChatBubble, label = "聊天", size = 44.dp, onMap = true) { showChatPanel = !showChatPanel }
+            Box {
+                GlassIconButton(icon = Icons.Rounded.ChatBubble, label = "聊天", size = 44.dp, onMap = true) { showChatPanel = !showChatPanel }
+                // v1.11：未读红点
+                if (unreadChats > 0) {
+                    Box(
+                        Modifier
+                            .align(Alignment.TopEnd)
+                            .offset(x = 6.dp, y = (-6).dp)
+                            .size(18.dp)
+                            .background(WColors.Danger, CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            if (unreadChats > 99) "99+" else unreadChats.toString(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White,
+                        )
+                    }
+                }
+            }
             Box {
                 GlassIconButton(icon = Icons.Rounded.MyLocation, label = "定位", size = 44.dp, onMap = true) { locateMenu = true }
                 DropdownMenu(
@@ -701,6 +843,46 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
         }
 
         if (!showLayers) {
+        // ---------- v0.16/1.8：覆盖统计（点一下切换 本人 / 全队） ----------
+        if (areaOn && (samples.size >= 2 || teamPoints.size >= 2)) {
+            val scopeTeam = coverageScope == "team"
+            Row(
+                Modifier
+                    .align(Alignment.BottomStart)
+                    .navigationBarsPadding()
+                    .padding(start = 12.dp, bottom = 76.dp)
+                    .clip(Radius.pillShape)
+                    .background(Color(0xCC0C1220))
+                    .clickable { coverageScope = if (scopeTeam) "self" else "team" }
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    buildString {
+                        append(if (scopeTeam) "全队 " else "本人 ")
+                        append(if (scopeTeam) teamPoints.size else samples.size)
+                        append(" 采")
+                        activeFit?.let { f ->
+                            val area = f.coverageAreaM2
+                            if (area > 0) {
+                                append(" · ")
+                                append(
+                                    if (area >= 10_000) String.format(java.util.Locale.US, "%.2f 公顷", area / 10_000.0)
+                                    else "${area.toInt()} m²"
+                                )
+                            }
+                            append(" · 置信 ")
+                            append(f.confidence.score0to100)
+                            append("%")
+                        }
+                        if (!scopeTeam && teamPoints.size >= 2) append(" · 点我切全队")
+                        if (scopeTeam) append(" · 点我切本人")
+                    },
+                    style = MonoText.style,
+                    color = WColors.OnBg,
+                )
+            }
+        }
         // ---------- 底部：标记 / 观战提示 ----------
         if (myRole != "OBSERVER") {
             Box(
@@ -710,39 +892,20 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
                     .padding(bottom = 16.dp),
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box {
-                        GlassIconButton(icon = Icons.Rounded.Flag, label = "标记", size = 44.dp, onMap = true) { markerMenu = true }
-                        DropdownMenu(expanded = markerMenu, onDismissRequest = { markerMenu = false }) {
-                            DropdownMenuItem(
-                                text = { Text("普通旗标", color = WColors.OnBg) },
-                                onClick = {
-                                    markerMenu = false
-                                    placeMode = "FLAG"
-                                    toast(ctx, "点击地图选择插旗位置")
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("可疑设备", color = WColors.Danger) },
-                                onClick = {
-                                    markerMenu = false
-                                    placeMode = "SUSPICIOUS"
-                                    toast(ctx, "点击地图选择可疑设备位置")
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("进相机取证（带水印）", color = WColors.OnBg) },
-                                onClick = {
-                                    markerMenu = false
-                                    placeMode = "PHOTO"
-                                    toast(ctx, "点击地图选择取证位置")
-                                },
-                            )
-                        }
+                    // v0.19：个人暂停/继续（不影响房间与其他队员）
+                    GlassIconButton(
+                        icon = if (paused) Icons.Rounded.PlayArrow else Icons.Rounded.Pause,
+                        label = if (paused) "继续" else "暂停",
+                        size = 44.dp,
+                        onMap = true,
+                    ) { paused = !paused }
+                    Spacer(Modifier.width(14.dp))
+                    GlassIconButton(icon = Icons.Rounded.Flag, label = "标记", size = 44.dp, onMap = true) {
+                        markSheet = true
                     }
                     Spacer(Modifier.width(14.dp))
                     GlassIconButton(icon = Icons.Rounded.PhotoCamera, label = "拍照", size = 44.dp, onMap = true) {
-                        placeMode = "PHOTO"
-                        toast(ctx, "点击地图选择取证位置")
+                        photoSheet = true
                     }
                     Spacer(Modifier.width(14.dp))
                     // 按住说话：按下即录音并广播 audioStart，松开发 audioStop
@@ -923,7 +1086,113 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
                 onOpenSplit = { showTaskPanel = false; showSplitDialog = true },
                 onOpenCircle = { showTaskPanel = false; showZoneDialog = true },
                 onTransfer = { m -> transferTarget = m },
+                onOpenTaskList = { showTaskPanel = false; showTaskList = true },
+                onOpenExport = { showTaskPanel = false; showExport = true },
+                onAi = { showTaskPanel = false; showAi = true },
+                onEndSession = { showTaskPanel = false; confirmEnd = true },
+                onTransferZone = { z -> transferZone = z },
+                onClearZones = { showTaskPanel = false; confirmClearZones = true },
+                onRequestCaptain = {
+                    val cap = state.members.firstOrNull { it.role == "CAPTAIN" }
+                    if (cap == null) {
+                        toast(ctx, "队长不在线，无法申请")
+                    } else {
+                        scope.launch {
+                            room.promoteRequest(userId, cap.userId)
+                            toast(ctx, "已向 ${cap.name} 发出接任申请")
+                        }
+                    }
+                },
             )
+        }
+
+        // ---------- v1.2：任务列表（新/老 · 完成度 · 删除） ----------
+        if (showTaskList) {
+            TeamTaskListPanel(
+                zones = displayZones,
+                stats = state.zoneStats,
+                members = state.members,
+                myRole = myRole,
+                userId = userId,
+                onDismiss = { showTaskList = false },
+                onDelete = { z -> deleteZone = z },
+                onTransfer = { z -> showTaskList = false; transferZone = z },
+            )
+        }
+
+        // ---------- v0.17：导出（全队走服务端，本人走本地） ----------
+        if (showExport) {
+            val httpBase = (AppGraph.prefs.getString(Route.PREF_SERVER, "") ?: "").trim().trimEnd('/')
+                .ifBlank { AppGraph.DEFAULT_SERVER }
+            val joinCode = AppGraph.lastJoinCode.orEmpty()
+            fun shareAll(format: String) {
+                showExport = false
+                scope.launch {
+                    runCatching { TeamExport.serverExport(ctx, httpBase, roomId, joinCode, format) }
+                        .onSuccess { f ->
+                            val mime = when (format) {
+                                "kml" -> "application/vnd.google-earth.kml+xml"
+                                "csv" -> "text/csv"
+                                else -> "application/geo+json"
+                            }
+                            shareFile(ctx, f, mime)
+                        }
+                        .onFailure { toast(ctx, it.message ?: "全队导出失败") }
+                }
+            }
+            fun shareSelf(kind: String) {
+                showExport = false
+                val task = AppGraph.teamTask()
+                val title = task?.title ?: "团队任务"
+                scope.launch {
+                    runCatching {
+                        when (kind) {
+                            "kml" -> TeamExport.personalKml(ctx, title, samples, myFit)
+                            "csv" -> TeamExport.personalCsv(ctx, title, samples)
+                            else -> TeamExport.personalGeoJson(ctx, title, samples, task?.target, myFit)
+                        }
+                    }.onSuccess { f ->
+                        val mime = when (kind) {
+                            "kml" -> "application/vnd.google-earth.kml+xml"
+                            "csv" -> "text/csv"
+                            else -> "application/geo+json"
+                        }
+                        shareFile(ctx, f, mime)
+                    }.onFailure { toast(ctx, it.message ?: "导出失败") }
+                }
+            }
+            ModalBottomSheet(onDismissRequest = { showExport = false }, containerColor = WColors.Bg1) {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = Space.screenH)
+                        .padding(bottom = Space.x3),
+                ) {
+                    Text("导出", style = MaterialTheme.typography.titleMedium, color = WColors.OnBg)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "全队：服务端汇总（任务区/标点/轨迹）；本人：本机样本",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = WColors.OnBgDim,
+                    )
+                    Spacer(Modifier.height(Space.x2))
+                    Text("全队", style = MaterialTheme.typography.labelMedium, color = WColors.Primary)
+                    Spacer(Modifier.height(4.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(Space.x2)) {
+                        ExportChip("GeoJSON") { shareAll("geojson") }
+                        ExportChip("KML") { shareAll("kml") }
+                        ExportChip("CSV") { shareAll("csv") }
+                    }
+                    Spacer(Modifier.height(Space.x3))
+                    Text("本人", style = MaterialTheme.typography.labelMedium, color = WColors.Secondary)
+                    Spacer(Modifier.height(4.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(Space.x2)) {
+                        ExportChip("GeoJSON") { shareSelf("geojson") }
+                        ExportChip("KML") { shareSelf("kml") }
+                        ExportChip("CSV") { shareSelf("csv") }
+                    }
+                }
+            }
         }
 
         // ---------- 团队聊天浮窗 ----------
@@ -970,7 +1239,7 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
                                             polygon = pts.map { listOf(it.first, it.second) },
                                             assignees = listOfNotNull(uid),
                                             note = if (uid == null) "自由绘制任务区" else "自由绘制任务区（$label）",
-                                            replace = true,
+                                            replace = false,
                                             ts = System.currentTimeMillis(),
                                         )
                                         runCatching { room.send(z) }
@@ -1123,7 +1392,7 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
                                     assignees = listOf(uid),
                                     note = "任务：${site.title} · $label",
                                     // 只在第一块清空旧任务区：服务端 replace=true 会 clear()，逐块都 true 就只剩最后一块
-                                    replace = i == 0,
+                                    replace = false,
                                     ts = now + i,
                                 )
                                 runCatching { room.send(z) }
@@ -1156,7 +1425,7 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
                         centerLon = me?.second ?: camera.centerLon,
                         radiusM = r,
                         note = note,
-                        replace = true, // 单块任务圈：清空旧任务区
+                        replace = false, // 单块任务圈：清空旧任务区
                         ts = System.currentTimeMillis(),
                     )
                     room.send(z)
@@ -1197,7 +1466,7 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
                             centerLon = lon,
                             radiusM = radius,
                             note = "任务区 ${i + 1}/$blocks",
-                            replace = i == 0, // 第一块带 replace，服务器先清空旧任务区（协议 v1.1）
+                            replace = false, // 第一块带 replace，服务器先清空旧任务区（协议 v1.1）
                             ts = now,
                         )
                         room.send(z)
@@ -1408,6 +1677,290 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
         )
     }
 
+    // ---------- v1.2：队员申请接任 → 队长审批 ----------
+    promoteRequest?.let { req ->
+        val fromName = state.members.firstOrNull { it.userId == req.from }?.name ?: "队员"
+        AlertDialog(
+            onDismissRequest = { promoteRequest = null },
+            title = { Text("接任申请") },
+            text = { Text("「$fromName」申请接任队长。同意后你将变为队员，带队继续走测。") },
+            confirmButton = {
+                TextButton({
+                    promoteRequest = null
+                    scope.launch {
+                        room.promote(userId, req.from)
+                        toast(ctx, "已同意接任，队长已转让")
+                    }
+                }) { Text("同意") }
+            },
+            dismissButton = {
+                TextButton({
+                    promoteRequest = null
+                    scope.launch { room.promoteDecline(userId, req.from) }
+                }) { Text("拒绝", color = WColors.Danger) }
+            },
+        )
+    }
+
+    // ---------- v1.2：删除任务区 ----------
+    deleteZone?.let { z ->
+        AlertDialog(
+            onDismissRequest = { deleteZone = null },
+            title = { Text("删除任务区") },
+            text = { Text("删除后队员端会同步消失，且不可恢复。确定删除这个任务区吗？") },
+            confirmButton = {
+                TextButton({
+                    val id = z.id
+                    deleteZone = null
+                    scope.launch {
+                        room.zoneDelete(userId, id)
+                        toast(ctx, "已删除任务区")
+                    }
+                }) { Text("删除", color = WColors.Danger) }
+            },
+            dismissButton = { TextButton({ deleteZone = null }) { Text("取消") } },
+        )
+    }
+
+    // ---------- v1.10：任务区转移 ----------
+    transferZone?.let { z ->
+        val candidates = state.members.filter {
+            it.userId != userId && it.role != "OBSERVER" && it.userId != z.by
+        }
+        AlertDialog(
+            onDismissRequest = { transferZone = null },
+            title = { Text("转移任务区") },
+            text = {
+                Column {
+                    Text(
+                        "把「${z.note.ifBlank { "区域 #" + z.id.takeLast(4) }}」转给：",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = WColors.OnBgDim,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    if (candidates.isEmpty()) {
+                        Text("没有可转移的队员（观战者不可作为负责人）", color = WColors.OnBgDim)
+                    }
+                    candidates.forEach { m ->
+                        Text(
+                            m.name + if (m.role == "CAPTAIN") "（队长）" else "",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = WColors.OnBg,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(Radius.mdShape)
+                                .background(WColors.ChipBg)
+                                .clickable {
+                                    transferZone = null
+                                    scope.launch {
+                                        room.zoneTransferRequest(z.id, userId, m.userId)
+                                        toast(ctx, "已发送给 ${m.name}，等待对方确认")
+                                    }
+                                }
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                        )
+                        Spacer(Modifier.height(6.dp))
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton({ transferZone = null }) { Text("取消") }
+            },
+        )
+    }
+
+    incomingTransfer?.let { req ->
+        val zone = displayZones.firstOrNull { it.id == req.id }
+        val fromName = state.members.firstOrNull { it.userId == req.by }?.name ?: "队友"
+        AlertDialog(
+            onDismissRequest = { incomingTransfer = null },
+            title = { Text("任务转移请求") },
+            text = {
+                Text(
+                    "「$fromName」想把任务区「${zone?.note?.ifBlank { "区域 #" + req.id.takeLast(4) } ?: req.id}」转给你，接受后你会成为该区负责人。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = WColors.OnBgDim,
+                )
+            },
+            confirmButton = {
+                TextButton({
+                    incomingTransfer = null
+                    scope.launch {
+                        room.zoneTransferAccept(req.id, userId)
+                        toast(ctx, "已接受任务转移")
+                    }
+                }) { Text("接受") }
+            },
+            dismissButton = {
+                TextButton({
+                    incomingTransfer = null
+                    scope.launch { room.zoneTransferDecline(req.id, userId) }
+                }) { Text("拒绝", color = WColors.Danger) }
+            },
+        )
+    }
+
+    if (confirmClearZones) {
+        AlertDialog(
+            onDismissRequest = { confirmClearZones = false },
+            title = { Text("清空全部任务区？") },
+            text = { Text("会把当前所有任务区标记删除（历史记录保留在服务端审计中），然后可以重新划分。") },
+            confirmButton = {
+                TextButton({
+                    confirmClearZones = false
+                    scope.launch {
+                        room.zoneClear(userId)
+                        toast(ctx, "已清空任务区")
+                    }
+                }) { Text("清空", color = WColors.Danger) }
+            },
+            dismissButton = { TextButton({ confirmClearZones = false }) { Text("取消") } },
+        )
+    }
+    // ---------- v0.19：结束团队采集（队长）与 AI 分析 ----------
+    if (confirmEnd) {
+        AlertDialog(
+            onDismissRequest = { confirmEnd = false },
+            title = { Text("结束本次团队采集？") },
+            text = { Text("将关闭房间，所有队员会被退出；各自本机数据保留，可用于复盘/导出。") },
+            confirmButton = {
+                TextButton({
+                    confirmEnd = false
+                    val httpBase = (AppGraph.prefs.getString(Route.PREF_SERVER, "") ?: "").trim().trimEnd('/')
+                        .ifBlank { AppGraph.DEFAULT_SERVER }
+                    val code = AppGraph.lastJoinCode.orEmpty()
+                    scope.launch {
+                        val ok = TeamApi.closeRoom(httpBase, roomId, code)
+                        toast(ctx, if (ok) "已结束团队采集" else "结束失败：服务端未升级或队伍码无效")
+                        if (ok) onBack()
+                    }
+                }) { Text("结束并退出", color = WColors.Danger) }
+            },
+            dismissButton = { TextButton({ confirmEnd = false }) { Text("取消") } },
+        )
+    }
+
+    if (showAi) {
+        val summary = buildString {
+            appendLine("协同模式数据摘要（本人视角）")
+            appendLine("房间：$roomId")
+            appendLine("身份：$myRole")
+            appendLine("在线队员：${state.members.size} 人")
+            appendLine("本人样本：${samples.size} 个")
+            appendLine("任务区：${displayZones.size} 个")
+            myFit?.let { f ->
+                appendLine("本人覆盖面积：${f.coverageAreaM2.toInt()} m²")
+                appendLine("本人置信度：${f.confidence.score0to100}/100（${f.confidence.level}）")
+            }
+            teamFit?.let { f ->
+                appendLine("全队覆盖面积（降采样）：${f.coverageAreaM2.toInt()} m²")
+            }
+            val last = samples.lastOrNull()
+            if (last != null) {
+                appendLine("最近采样：${last.lat}, ${last.lon}  信号 ${last.rsrp ?: "?"} dBm  命中=${last.onTarget}")
+            }
+        }
+        AiSheet(summary) { showAi = false }
+    }
+    // ---------- v0.14.1：拍照 / 标记 先选「当前位置 / 自定义位置」 ----------
+    val lastFix = samples.lastOrNull()
+    if (photoSheet) {
+        ModalBottomSheet(onDismissRequest = { photoSheet = false }, containerColor = WColors.Bg1) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Space.screenH)
+                    .padding(bottom = Space.x3),
+            ) {
+                Text("拍照位置", style = MaterialTheme.typography.titleMedium, color = WColors.OnBg)
+                Spacer(Modifier.height(Space.x2))
+                TeamLocOption(
+                    title = "当前位置",
+                    subtitle = lastFix?.let { "使用手机定位（精度约 ${it.accuracyM?.toInt() ?: "?"} 米）" }
+                        ?: "暂无定位，请用自定义位置",
+                    enabled = lastFix != null,
+                    leading = { Icon(Icons.Rounded.MyLocation, contentDescription = null, tint = WColors.Primary, modifier = Modifier.size(18.dp)) },
+                ) {
+                    photoSheet = false
+                    manualPhoto = false
+                    pickedLatLon = null
+                    showCamera = true
+                }
+                TeamLocOption(
+                    title = "自定义位置（点地图）",
+                    subtitle = "在地图上点选位置；水印会标注「手动选点（非 GPS）」",
+                    leading = { Icon(Icons.Rounded.Place, contentDescription = null, tint = WColors.Secondary, modifier = Modifier.size(18.dp)) },
+                ) {
+                    photoSheet = false
+                    manualPhoto = true
+                    placeMode = "PHOTO"
+                    toast(ctx, "点击地图选择取证位置")
+                }
+            }
+        }
+    }
+
+    if (markSheet) {
+        ModalBottomSheet(onDismissRequest = { markSheet = false }, containerColor = WColors.Bg1) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Space.screenH)
+                    .padding(bottom = Space.x3),
+            ) {
+                Text("标记", style = MaterialTheme.typography.titleMedium, color = WColors.OnBg)
+                Spacer(Modifier.height(Space.x2))
+                Row(horizontalArrangement = Arrangement.spacedBy(Space.x2)) {
+                    listOf("FLAG" to "普通旗标", "SUSPICIOUS" to "可疑设备", "PHOTO" to "取证").forEach { (k, label) ->
+                        val on = markKind == k
+                        Text(
+                            label,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = if (on) WColors.OnPrimary else WColors.OnBgDim,
+                            modifier = Modifier
+                                .clip(Radius.pillShape)
+                                .background(if (on) WColors.Primary else WColors.ChipBg)
+                                .clickable { markKind = k }
+                                .padding(horizontal = 14.dp, vertical = 8.dp),
+                        )
+                    }
+                }
+                Spacer(Modifier.height(Space.x2))
+                TeamLocOption(
+                    title = "当前位置",
+                    subtitle = lastFix?.let { "在当前位置落点（精度约 ${it.accuracyM?.toInt() ?: "?"} 米）" }
+                        ?: "暂无定位，请用自定义位置",
+                    enabled = lastFix != null,
+                    leading = { Icon(Icons.Rounded.MyLocation, contentDescription = null, tint = WColors.Primary, modifier = Modifier.size(18.dp)) },
+                ) {
+                    val f = lastFix ?: return@TeamLocOption
+                    markSheet = false
+                    if (markKind == "PHOTO") {
+                        manualPhoto = false
+                        pickedLatLon = null
+                        showCamera = true
+                    } else {
+                        // 复用地图点选后的命名/可见范围流程
+                        markerName = ""
+                        markerVis = 0
+                        markerVisibleTo.clear()
+                        newMarkerAt = Triple(f.lat, f.lon, markKind)
+                    }
+                }
+                TeamLocOption(
+                    title = "自定义位置（点地图）",
+                    subtitle = if (markKind == "PHOTO") "点图后进相机；照片水印标注手动选点" else "在地图上点选落点位置",
+                    leading = { Icon(Icons.Rounded.Place, contentDescription = null, tint = WColors.Secondary, modifier = Modifier.size(18.dp)) },
+                ) {
+                    markSheet = false
+                    manualPhoto = markKind == "PHOTO"
+                    placeMode = markKind
+                    toast(ctx, if (markKind == "PHOTO") "点击地图选择取证位置" else "点击地图选择位置")
+                }
+            }
+        }
+    }
+
     // ---------- 团队取证相机（QA-09：协同地图补回拍照打点，照片带水印并入房间标记） ----------
     if (showCamera) {
         val fix = samples.lastOrNull()
@@ -1417,8 +1970,9 @@ fun TeamRoomScreen(roomId: String, onBack: () -> Unit) {
             currentLat = pin?.first ?: fix?.lat ?: camera.centerLat,
             currentLon = pin?.second ?: fix?.lon ?: camera.centerLon,
             hasFix = pin != null || fix != null,
+            manualLocation = manualPhoto,
             taskId = "room-$roomId",
-            onClose = { showCamera = false; pickedLatLon = null },
+            onClose = { showCamera = false; pickedLatLon = null; manualPhoto = false },
             onCaptured = { rec ->
                 showCamera = false
                 val chosen = pickedLatLon
@@ -1501,6 +2055,13 @@ private fun TaskPanel(
     onOpenSplit: () -> Unit,
     onOpenCircle: () -> Unit,
     onTransfer: (MemberView) -> Unit,
+    onOpenTaskList: () -> Unit,
+    onRequestCaptain: () -> Unit,
+    onOpenExport: () -> Unit,
+    onAi: () -> Unit,
+    onEndSession: () -> Unit,
+    onTransferZone: (WsMsg.Zone) -> Unit,
+    onClearZones: () -> Unit,
 ) {
     Box(
         Modifier
@@ -1566,7 +2127,12 @@ private fun TaskPanel(
                         Row(
                             Modifier
                                 .fillMaxWidth()
-                                .clickable { if (m.userId != AppGraph.userId() && m.role != "CAPTAIN") onTransfer(m) }
+                                .clickable {
+                                    // v1.2：观战不参与转让链
+                                    if (m.userId != AppGraph.userId() && m.role != "CAPTAIN" && m.role != "OBSERVER") {
+                                        onTransfer(m)
+                                    }
+                                }
                                 .padding(vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
@@ -1590,6 +2156,22 @@ private fun TaskPanel(
                         style = MaterialTheme.typography.labelSmall,
                         color = WColors.OnBgDim,
                     )
+                    if (role == "MEMBER") {
+                        Spacer(Modifier.height(10.dp))
+                        GlassTextButton("申请接任队长", Modifier.fillMaxWidth()) { onRequestCaptain() }
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                GlassTextButton("全部任务（新/老 · 完成度 · 删除）", Modifier.fillMaxWidth()) { onOpenTaskList() }
+                Spacer(Modifier.height(8.dp))
+                GlassTextButton("导出（全队 / 本人）", Modifier.fillMaxWidth()) { onOpenExport() }
+                Spacer(Modifier.height(8.dp))
+                GlassTextButton("AI 分析（基于本人数据）", Modifier.fillMaxWidth()) { onAi() }
+                if (role == "CAPTAIN") {
+                    Spacer(Modifier.height(8.dp))
+                    GlassTextButton("清空全部任务区（重新划分）", Modifier.fillMaxWidth()) { onClearZones() }
+                    Spacer(Modifier.height(8.dp))
+                    GlassTextButton("结束本次团队采集（关闭房间）", Modifier.fillMaxWidth()) { onEndSession() }
                 }
             }
         }
@@ -1885,3 +2467,217 @@ private fun MemberChip(m: MemberView) {
 /** 面积口径：小于 1 公顷显示平方米，否则公顷（两位小数），给绘制条实时看大小 */
 private fun fmtArea(m2: Double): String =
     if (m2 < 10_000.0) "${m2.toInt()} m²" else String.format(java.util.Locale.US, "%.2f 公顷", m2 / 10_000.0)
+
+/** v0.14.1：拍照/标记的位置选项行（当前位置 / 自定义位置） */
+@Composable
+private fun TeamLocOption(
+    title: String,
+    subtitle: String,
+    enabled: Boolean = true,
+    leading: @Composable () -> Unit,
+    onClick: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 5.dp)
+            .clip(Radius.mdShape)
+            .background(WColors.ChipBg)
+            .clickable(enabled = enabled) { onClick() }
+            .padding(horizontal = Space.x3, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .size(32.dp)
+                .glass(shape = CircleShape),
+            contentAlignment = Alignment.Center,
+        ) { leading() }
+        Spacer(Modifier.width(Space.x3))
+        Column(Modifier.weight(1f)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleSmall,
+                color = if (enabled) WColors.OnBg else WColors.OnBgDim,
+            )
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.labelSmall,
+                color = WColors.OnBgDim,
+                maxLines = 2,
+            )
+        }
+    }
+}
+
+/** v1.2：任务列表（全部 / 现任队长 / 往届 / 我负责），带完成度与删除。 */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TeamTaskListPanel(
+    zones: List<WsMsg.Zone>,
+    stats: List<WsMsg.ZoneStat>,
+    members: List<MemberView>,
+    myRole: String,
+    userId: String,
+    onDismiss: () -> Unit,
+    onDelete: (WsMsg.Zone) -> Unit,
+    onTransfer: (WsMsg.Zone) -> Unit,
+) {
+    var filter by remember { mutableIntStateOf(0) } // 0 全部 / 1 现任 / 2 往届 / 3 我负责
+    val captainId = members.firstOrNull { it.role == "CAPTAIN" }?.userId
+    fun nameOf(id: String): String = members.firstOrNull { it.userId == id }?.name ?: "已离开成员"
+    val statById = remember(stats) { stats.associateBy { it.id } }
+    val list = when (filter) {
+        1 -> zones.filter { it.by == captainId }
+        2 -> zones.filter { it.by != captainId }
+        3 -> zones.filter { it.assignees.isEmpty() || it.assignees.contains(userId) }
+        else -> zones
+    }.sortedByDescending { it.ts }
+
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = WColors.Bg1) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Space.screenH)
+                .padding(bottom = Space.x3),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("任务列表", style = MaterialTheme.typography.titleMedium, color = WColors.OnBg)
+                Spacer(Modifier.weight(1f))
+                Text("${zones.size} 个区域", style = MonoText.style, color = WColors.OnBgDim)
+            }
+            Spacer(Modifier.height(Space.x2))
+            Row(horizontalArrangement = Arrangement.spacedBy(Space.x2)) {
+                listOf("全部", "现任", "往届", "我负责").forEachIndexed { i, label ->
+                    val on = filter == i
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (on) WColors.OnPrimary else WColors.OnBgDim,
+                        modifier = Modifier
+                            .clip(Radius.pillShape)
+                            .background(if (on) WColors.Primary else WColors.ChipBg)
+                            .clickable { filter = i }
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                    )
+                }
+            }
+            Spacer(Modifier.height(Space.x2))
+            if (list.isEmpty()) {
+                Text(
+                    "还没有任务区",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = WColors.OnBgDim,
+                    modifier = Modifier.padding(vertical = Space.x3),
+                )
+            }
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                list.forEach { z ->
+                    val st = statById[z.id]
+                    val ratio = st?.ratio ?: 0.0
+                    val status = when {
+                        st == null || st.total == 0 -> "统计中"
+                        ratio >= 0.8 -> "已完成"
+                        ratio > 0.0 || (st.samples > 0) -> "进行中"
+                        else -> "未开始"
+                    }
+                    val statusColor = when (status) {
+                        "已完成" -> WColors.Success
+                        "进行中" -> WColors.Warning
+                        else -> WColors.OnBgDim
+                    }
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                z.note.ifBlank { "区域 #" + z.id.takeLast(4) },
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = WColors.OnBg,
+                                maxLines = 1,
+                            )
+                            Text(
+                                "队长 ${nameOf(z.by)} · ${if (z.assignees.isEmpty()) "全队" else z.assignees.joinToString("、") { nameOf(it) }}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = WColors.OnBgDim,
+                                maxLines = 1,
+                            )
+                        }
+                        Column(horizontalAlignment = Alignment.End) {
+                            Text(status, style = MaterialTheme.typography.labelMedium, color = statusColor)
+                            Text(
+                                if (st == null || st.total == 0) "--" else "${(ratio * 100).toInt()}%",
+                                style = MonoText.style,
+                                color = statusColor,
+                            )
+                        }
+                        // v1.10：转移（创建者或队长可发起；待确认时只显示状态）
+                        if (z.pendingTransferTo.isNotBlank()) {
+                            Spacer(Modifier.width(Space.x2))
+                            Text(
+                                "待确认",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = WColors.Warning,
+                            )
+                        } else if (myRole == "CAPTAIN" && z.assignees.size <= 1) {
+                            Spacer(Modifier.width(Space.x2))
+                            Text(
+                                "转移",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = WColors.Primary,
+                                modifier = Modifier
+                                    .clip(Radius.pillShape)
+                                    .background(WColors.Primary.copy(alpha = 0.14f))
+                                    .clickable { onTransfer(z) }
+                                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                            )
+                        }
+                        val canDelete = myRole == "CAPTAIN" || z.by == userId
+                        if (canDelete) {
+                            Spacer(Modifier.width(Space.x2))
+                            Text(
+                                "删除",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = WColors.Danger,
+                                modifier = Modifier
+                                    .clip(Radius.pillShape)
+                                    .background(WColors.Danger.copy(alpha = 0.14f))
+                                    .clickable { onDelete(z) }
+                                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                            )
+                        }
+                    }
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(1.dp)
+                            .background(WColors.GlassBorder.copy(alpha = 0.25f)),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** v0.17：导出选项胶囊 */
+@Composable
+private fun ExportChip(label: String, onClick: () -> Unit) {
+    Text(
+        label,
+        style = MaterialTheme.typography.labelLarge,
+        color = WColors.OnPrimary,
+        modifier = Modifier
+            .clip(Radius.pillShape)
+            .background(WColors.Primary)
+            .clickable { onClick() }
+            .padding(horizontal = 16.dp, vertical = 9.dp),
+    )
+}

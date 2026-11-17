@@ -62,8 +62,14 @@ class SessionStore(context: Context) {
         return runCatching { json.decodeFromString<SessionManifest>(f.readText()) }.getOrNull()
     }
 
-    fun listSessions(): List<SessionManifest> =
+    /**
+     * 会话列表（v0.16）：
+     * - [includeTeam] = false 时过滤掉 team-<roomId>（首页「最近任务」用，避免团队会话抢占）；
+     * - [includeTeam] = true 时包含团队会话（历史页展示，带「团队」标记）。
+     */
+    fun listSessions(includeTeam: Boolean = false): List<SessionManifest> =
         root.listFiles { d -> d.isDirectory }
+            ?.filter { includeTeam || !it.name.startsWith("team-") }
             ?.mapNotNull { loadManifest(it.name) }
             ?.sortedByDescending { it.startedAtEpochMs }
             ?: emptyList()
@@ -82,6 +88,23 @@ class SessionStore(context: Context) {
         return dir.deleteRecursively()
     }
 
+    /**
+     * v0.19：清理过期的团队会话（team-*）。
+     * 团队会话默认保留以便复盘，但无限增长会占磁盘；默认 14 天。
+     */
+    fun purgeTeamSessions(olderThanDays: Int = 14): Int {
+        val cutoff = System.currentTimeMillis() - olderThanDays * 24L * 3600_000L
+        val dirs = root.listFiles { d -> d.isDirectory && d.name.startsWith("team-") } ?: return 0
+        var removed = 0
+        dirs.forEach { dir ->
+            val m = loadManifest(dir.name)
+            val ts = m?.startedAtEpochMs ?: dir.lastModified()
+            if (ts in 1 until cutoff) {
+                if (runCatching { dir.deleteRecursively() }.getOrDefault(false)) removed++
+            }
+        }
+        return removed
+    }
     /** 删除全部会话，返回成功删除的会话数 */
     fun deleteAllSessions(): Int {
         val dirs = root.listFiles { d -> d.isDirectory } ?: return 0

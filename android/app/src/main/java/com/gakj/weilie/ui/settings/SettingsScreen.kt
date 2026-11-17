@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -76,6 +77,9 @@ import com.gakj.weilie.ui.theme.MonoText
 import com.gakj.weilie.ui.theme.SectionHeader
 import com.gakj.weilie.ui.theme.ThemeController
 import com.gakj.weilie.ui.theme.ThemeSpec
+import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
+import com.gakj.weilie.R
 import com.gakj.weilie.ui.theme.WColors
 import com.gakj.weilie.ui.theme.colorHsl
 import kotlin.math.roundToInt
@@ -116,6 +120,9 @@ fun SettingsScreen(onBack: () -> Unit) {
     }
     var server by remember { mutableStateOf(AppGraph.prefs.getString(Route.PREF_SERVER, "") ?: "") }
     var baiduAk by remember { mutableStateOf(AppGraph.prefs.getString(Route.PREF_BAIDU_AK, "") ?: "") }
+    // v0.20：内置使用说明
+    var showGuide by remember { mutableStateOf(false) }
+    if (showGuide) GuideDialog { showGuide = false }
 
     // 需求 2：GPS 双重安检门槛（默认 50m / 3m，可调）
     var accGate by remember {
@@ -468,15 +475,32 @@ fun SettingsScreen(onBack: () -> Unit) {
         SectionHeader("关于", modifier = Modifier.padding(horizontal = 20.dp))
         GlassCard(Modifier.padding(horizontal = 20.dp)) {
             Column {
-                Text("围猎 v${com.gakj.weilie.BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.titleMedium, color = WColors.OnBg)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Image(
+                        painter = painterResource(R.drawable.ic_launcher_foreground),
+                        contentDescription = "围猎 Logo",
+                        modifier = Modifier
+                            .size(52.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color.Black),
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Text("围猎 v${com.gakj.weilie.BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.titleMedium, color = WColors.OnBg)
+                }
+                Spacer(Modifier.height(8.dp))
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "蜂窝网络覆盖实测与协同定位工具。数据仅保存在本机，导出由使用者自行管理。\n\n" +
-                        "所需权限：定位、通知、振动、网络。\n\n" +
+                    "蜂窝网络覆盖实测与协同定位工具。\n\n" +
+                        "· 单人模式：解析目标小区（ECI/NCI/经纬度）→ 逐秒采样 → 凹包覆盖拟合（含内洞/面积/置信度）→ 导出 KML/GeoJSON/CSV/截图。\n" +
+                        "· 协同模式：多人实时位置、任务区划分与完成度、拍照取证、语音对讲、AI 分析；支持队长/队员双向转让、全队与本人两套覆盖口径、全队/本人导出。\n\n" +
+                        "数据默认仅保存在本机；协同数据经队伍自建服务器转发，可由服务端导出。照片与位置属敏感数据，请按取证规范管理。\n\n" +
+                        "所需权限：定位、通知、振动、相机、麦克风、网络。\n\n" +
                         "仅供合法执法与教学场景使用。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = WColors.OnBgDim,
                 )
+                Spacer(Modifier.height(12.dp))
+                GlassTextButton("查看使用说明", Modifier.fillMaxWidth()) { showGuide = true }
             }
         }
         Spacer(Modifier.navigationBarsPadding().height(24.dp))
@@ -737,4 +761,60 @@ private fun GateSliderRow(
             modifier = Modifier.fillMaxWidth().height(28.dp),
         )
     }
+}
+
+/** v0.20：内置使用说明（单人 / 协同 / 数据 / 常见问题） */
+@Composable
+private fun GuideDialog(onDismiss: () -> Unit) {
+    val sections = listOf(
+        "单人走测" to
+            "1. 首页「单人走测」→ 粘贴目标参数（ECI/NCI/经纬度）或「用本机当前基站」；\n" +
+            "2. 进入地图开始采集，按路线走测；命中目标时轨迹与标点会高亮；\n" +
+            "3. 结束后在「历史」查看覆盖面积、置信度与洞，支持导出 KML/GeoJSON/CSV/截图。",
+        "协同模式" to
+            "1. 「多人协同」→ 填昵称与服务器地址 → 创建/加入房间；\n" +
+            "2. 可选填「团队目标」：填了才能判定命中，留空只记录轨迹；\n" +
+            "3. 队长在「任务」里划任务区并下发给队员，队员按区走测；\n" +
+            "4. 底部可标记、拍照取证、按住对讲；右上「任务/聊天/定位」查看队伍状态；\n" +
+            "5. 任务面板支持「全部任务」「导出（全队/本人）」「AI 分析」「暂停」「结束本次采集」。",
+        "覆盖口径" to
+            "地图左下统计条显示覆盖情况，点一下可在「本人」与「全队」之间切换：\n" +
+            "· 本人：只用本机采样拟合，实时、精确；\n" +
+            "· 全队：用服务端下发的合并采样拟合（降采样，约 10–20 秒刷新），适合复盘整体覆盖。",
+        "角色与权限" to
+            "· 队长：划任务区、转让队长、删除任意任务区、结束全场；\n" +
+            "· 队员：采集上报、申请接任队长、删除自己创建的任务区；\n" +
+            "· 观战：只读，不采集、不上报位置，也不能被转让为队长。",
+        "数据与隐私" to
+            "· 单人数据只存本机；协同数据经队伍自建服务器转发，可由服务端导出；\n" +
+            "· 团队会话保留在本机历史中（默认 14 天后自动清理），可手动删除；\n" +
+            "· 照片带水印与在线验真码；手选位置的照片会标注「手动选点（非 GPS）」。",
+        "常见问题" to
+            "· 命中不亮：团队目标未填，或目标格式不正确；\n" +
+            "· 全队覆盖不出现：服务端需升级到支持合并采样的版本；\n" +
+            "· 全队导出失败：检查服务端版本、队伍码与网络；\n" +
+            "· 房间进不去：确认服务器地址、队伍码，以及服务端是否已启动。",
+    )
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = WColors.Bg1,
+        title = { Text("使用说明", style = MaterialTheme.typography.titleMedium, color = WColors.OnBg) },
+        text = {
+            Column(
+                Modifier
+                    .heightIn(max = 460.dp)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                sections.forEachIndexed { i, (head, body) ->
+                    if (i > 0) Spacer(Modifier.height(12.dp))
+                    Text(head, style = MaterialTheme.typography.titleSmall, color = WColors.Primary)
+                    Spacer(Modifier.height(3.dp))
+                    Text(body, style = MaterialTheme.typography.bodySmall, color = WColors.OnBgDim)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("知道了", color = WColors.Primary) }
+        },
+    )
 }

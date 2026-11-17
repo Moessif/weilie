@@ -54,6 +54,8 @@ object AppGraph {
      * task 传 null（如进程被杀后从路由恢复）时用占位目标兜底。
      */
     fun ensure(context: Context, taskId: String, task: CoverageTask?): SamplingController {
+        // 任务/模式切换（单人 <-> 协同）时旧控制器会在这里被停止；
+        // 调用方无需二次确认：单人采集只在地图页存在，离开即停。
         currentController?.let { cur ->
             if (cur.task.id == taskId) return cur
             cur.stop()
@@ -173,6 +175,18 @@ object AppGraph {
     /** 最近一次进入房间时的角色：CAPTAIN / MEMBER / OBSERVER */
     var lastRole: String? = null
 
+    /** v0.16：团队任务（目标来自设置页的「团队目标」输入），留空返回 null 表示不判定命中 */
+    fun teamTask(): CoverageTask? {
+        val raw = prefs.getString(Route.PREF_TEAM_TARGET, "")?.trim().orEmpty()
+        if (raw.isEmpty()) return null
+        val parsed = runCatching { TaskInputParser.parse(raw).target }.getOrNull() ?: return null
+        return CoverageTask(
+            id = "team-target",
+            title = "团队任务",
+            target = parsed,
+            createdAtEpochMs = System.currentTimeMillis(),
+        )
+    }
     /** 本机用户 ID：首次使用生成 UUID 并持久化 */
     fun userId(): String =
         prefs.getString("user_id", null) ?: java.util.UUID.randomUUID().toString().also {

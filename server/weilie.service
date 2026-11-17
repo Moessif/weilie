@@ -7,6 +7,9 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/opt/weilie
 Environment=WEILIE_DATA_DIR=/opt/weilie/data
+Environment=WEILIE_ROOM_TTL_DAYS=3
+# v1.9：管理员清理/房间清单口令，部署时换成 32 位随机串，不要用示例值
+Environment=WEILIE_ADMIN_TOKEN=CHANGE_ME_STRONG_RANDOM
 ExecStart=/usr/bin/java -Xms64m -Xmx320m -jar /opt/weilie/weilie-server-all.jar
 Restart=always
 RestartSec=3

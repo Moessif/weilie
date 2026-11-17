@@ -1,133 +1,197 @@
-# 围猎（WeiLie）· 普通手机基站覆盖实测与搜捕协同系统
+# 围猎 · 普通手机基站覆盖实测与协同搜捕系统
 
-面向「基层民警无专业路测设备、仅有一部普通手机」的场景，用手机自身的蜂窝小区信息 + GNSS 定位，
-通过**移动打点**反推目标基站的真实覆盖范围，并把结果共享给队友，用于搜捕、找人、清查等任务。
+> 面向公安一线「找不到、围不住」的实战痛点：**不依赖专业路测设备、不需要精确地图选点**，
+> 用民警随身手机把「上级下发的基站编号」测成一张**可信的实测覆盖范围**，并支持多人分区协同围捕、现场取证与在线验真。
 
-> 参赛项目：中国人民公安大学第三届学生科技应用创新大赛 · 公安网络通信与移动应用关键技术赛道
-> 当前版本 **v0.13.0**（Android，versionCode 32）
+本仓库是可协作开发的主仓库，包含四个部分：
+
+| 目录 | 内容 | 技术栈 |
+| --- | --- | --- |
+| `android/` | 围猎客户端（现场实测 / 多人协同 / 取证相机 / 静默跟踪） | Kotlin · Jetpack Compose · 百度地图 SDK · CameraX |
+| `server/` | 协同与取证服务端（含管理站后端、照片验真、基站库代理） | Kotlin · Ktor 2.3 · Netty · SQLite |
+| `admin-web/` | 管理站前端（组织/用户/激活码/房间/照片/审计/运维） | Vue 3 · TypeScript · Vite · Element Plus · ECharts |
+| `docs/` | 立项与研究材料、协议与运维文档、各版本变更说明、申报书 | Markdown / docx |
+
+**当前版本**：客户端 `v0.22.0`（versionCode 58）· 服务端 `v1.12.0` · 管理站 `v1.12.0`
+
+安装包与服务端 jar 不打进仓库，统一发布在 [Releases](../../releases)：
+
+- `weilie-v0.22.0-debug.apk` — Android 8.0+（minSdk 26，targetSdk 35）
+- `weilie-server-v1.12.0-all.jar` — 需要 JDK 17
 
 ---
 
-## 核心能力
+## 一、它解决什么问题
 
-| 能力 | 说明 |
-| --- | --- |
-| 单人覆盖实测 | 输入目标小区编号（ECI / NCI / LAC+CI / 经纬度），边走边打点，实时生成轨迹、凹包、覆盖等值线与拟合置信度 |
-| 打点三态 | 主区命中＝实心点，邻区命中（NCI/PCI 指纹匹配）＝彩色实心点（不同基站不同色），脱离＝空心点（只画轨迹、不参与面积） |
-| GPS 双重安检 | 精度差 > 阈值直接跳过并提示；与上点距离 < 阈值自动合并，避免原地抖动堆点；阈值可在设置里调 |
-| 面积两种成面 | 高精度凹包（Alpha Shape，点太少退化为沿线带）／模拟实测区域（轨迹点画圆或方块、大小 5–200m 可调、沿轨迹融合成片） |
-| 信号热力图 | RSRP 插值扩散成连续热力层，强弱阈值、网格间隔、扩散半径、透明度可调，独立开关 |
-| 理论覆盖区 | 输入经纬度/方位角/距离，自动画全向圆、扇形或橙色 TA 距离环带，与实测区求交 |
-| 双卡双制式 | 4G/5G（SA 取 NR 服务小区、NSA 显示锚点）、按数据卡过滤 PLMN 避免混入别家小区，NCI 习惯写法 `5677244420(1386046-4)` |
-| 基站库图层 | 接入 OpenCelliD 瓦片缓存（服务端聚合），地图上显示站址、方位角与覆盖扇区，可按基站 / 矩形 / 环带下达任务区 |
-| 多人协同 | 建队/队伍码/二维码加入，队长用矩形分块、圆形、按基站扇区或**自由绘制多边形**下达区域，队友位置与打点实时同步，观战只读，队长可转让 |
-| 自由绘制范围 | 单指像画画一样拖出范围（实时显示轨迹线与面积），双指拖动地图、捏合缩放，可撤销/重画/确认，并按队员分配 |
-| 标点与导航 | 队长与队员都可在地图任意位置标点、命名、设定可见范围，队友一键导航到该点；取证标点可删除（本机/队长权限） |
-| 取证相机 | 类水印相机版式（大字时间 / 日期 / 地址 / 蜂窝水印烧入 JPG），5 类取证类型（普通/隐蔽摄像头/可疑摄像头/可疑设备/其他）在地图用不同 emoji 图标区分 |
-| 影像验真 | 照片 SHA-256 + 服务端 HMAC 签名登记，生成 8 位验证码；跨设备也能用验证码远程查看登记信息，扫码开网页复核原图是否被改过 |
-| 静默跟踪 | 前台服务 + 震动提示（主区/邻区/脱离三种节奏，强度可调），不发声不亮屏，状态写日志，明显停止入口 |
-| Shizuku 邻区增强 | 免 root 用 shell 身份读 `dumpsys telephony.registry`，补全被 ROM 过滤的邻区；设置页显示服务版本/UID/最近读取条数，未授权自动回退系统 API |
-| 跨设备照片 | 拍照登记后上传原图到自建服务器，队友点标点即可看到原图与登记信息；服务端 `data/photos` 存储，单张上限 8 MB |
-| 语音对讲 | 半双工按住说话，16 kHz PCM 100 ms 帧、WebSocket 房间内转发，端到端 200—400 ms，约 43 KB/s |
-| 数据导出 | CSV / GeoJSON / KML，轨迹照片导出可带真实百度底图与各类覆盖图层；历史任务支持长按/多选/全部删除 |
-| 培训模式 | 内置 200 点回放剧本 + 解说卡，供学警无真机环境下学习 |
-| 主题系统 | 深色主题（v0.11.0 起固定深色）+ 10 套强调色 + HSL 微调，全局玻璃拟态设计语言 |
+实战中，上级通常只能给一个基站编号（如 `NCI 5677244420` / `ECI 123456789`），而"这个基站到底覆盖哪一片"既没有现成数据，也不适合要求民警在 GIS 上精确点选。围猎的做法：
 
-## 目录结构
+1. **目标解析**：把基站编号（ECI / NCI / LAC-CI / 经纬度+半径）解析成可比较的统一编号，并展示 gNB/eNB、小区号、PCI、频段。
+2. **走测采样**：手机按 1s 间隔采集服务小区 + 邻区 + GPS，逐点判定「主区命中 / 邻区命中 / 脱离」，分别用实心点、彩色邻区点、空心点绘制。
+3. **实测成面**：对有效实心点做 GPS 双重安检（精度/最小间距）、卡尔曼平滑、Douglas-Peucker 抽稀、Alpha Shape 凹包成面；点不足时退化为路线条带。
+4. **多人围捕**：队长建房间（队伍码/二维码），下发任务区、自由绘制范围、指定队员分区；队员实时上报位置与采样，队长地图汇总，支持导航到标点。
+5. **现场取证**：拍照即烧录水印（时间/坐标/基站/备注），照片上送服务端登记并做 HMAC 验签，任何设备都可通过验证码核验真伪。
+6. **静默跟踪**：工具箱里一键开启，只靠震动区分「主区命中 / 邻区命中 / 脱离」，不亮屏不发声，适合隐蔽接近。
+
+## 二、仓库结构
 
 ```
-android/          Android 客户端（Kotlin + Jetpack Compose + 百度地图 SDK）
+android/                    Android 客户端
   app/src/main/java/com/gakj/weilie/
-    core/telephony/   小区/双卡/信号采集与编号语义（CellCodec、SimCellPlanner、NetJudge）
-    core/sampling/    采样控制器、会话与导出
-    core/fitting/     GPS 安检与卡尔曼、Alpha Shape 凹包、模拟区域缓冲、热力与理论覆盖、等值线
-    core/cellmap/     基站库（OpenCelliD）查询、扇区与环带几何
-    core/tracking/    静默跟踪判定逻辑
-    core/photo/       取证照片存储与索引
-    core/verify/      照片验真（本地 + 服务端登记/查询）
-    core/sync/        协议（WsMsg）与房间客户端
-    service/          静默跟踪前台服务
-    ui/map/           地图页、数据栏、工具箱、图层、引擎适配（Baidu / Canvas 双实现）
-    ui/camera/        取证相机与照片详情（含跨设备远程记录）
-    ui/team/          组队、房间、协同地图、扫码
-    ui/…              大厅、登录、设置、历史、培训、AI 助手
-server/           Ktor 协同服务端（房间 WS 同步 + 照片验真网页 + 登记接口 + 基站库缓存）
-docs/             研究报告、申报材料、答辩脚本、各版本交付说明
-tools/            联调探针（Node WebSocket）、真机 UI 自动化与截图取坐标脚本
-dist/             已构建的服务端 fatJar（APK 走 Releases）
+    core/                   数据层：telephony 采集、fitting 拟合算法、sampling、sync、verify、photo、export
+    ui/                     地图、工具箱、相机、多人协同、历史、设置、主题
+  app/src/test/             单元测试（算法与协议）
+server/                     服务端（Ktor）
+  src/main/kotlin/com/gakj/weilie/server/
+    RoomWs.kt RoomStore.kt  房间协同 WebSocket 与状态
+    PhotoRegistry.kt        照片登记与 HMAC 签名
+    PhotoWebVerify.kt       /v/{code} 验真页与文件比对
+    admin/                  管理站后端（账号、组织、激活码、审计、运维）
+    resources/admin/        管理站前端构建产物（由 admin-web 构建后拷入）
+  src/test/                 服务端测试（接口、安全加固、导出、分区）
+admin-web/                  管理站前端源码
+docs/                       文档
+  INDEX.md                  文档索引（先看这个）
+  admin/                    管理站设计说明、安全审计报告、运维手册、线上截图
+  assets/                   文档图片
+tools/                      构建/测试/部署/分析脚本
 ```
 
-## 构建
+## 三、开发环境
 
-前置：JDK 17、Android SDK（platform 35 / build-tools）、Gradle 8.9。
+| 工具 | 版本 | 说明 |
+| --- | --- | --- |
+| JDK | 17 | 客户端与服务端都用它编译 |
+| Android SDK | compileSdk 35 / build-tools 35 | 客户端 |
+| Gradle | 8.9（客户端用自带 wrapper 8.7） | 无需全局安装，用 `gradlew` |
+| Node.js | 20+（推荐 22） | 管理站前端 |
+| pnpm | 9+ | 管理站前端（仓库带 `pnpm-lock.yaml`） |
 
-```powershell
-$env:JAVA_HOME='C:\AndroidDev\jdk-17.0.2'
-cd android
-C:\AndroidDev\gradle-8.9\bin\gradle.bat :app:testDebugUnitTest :app:assembleDebug
-# 产物：android/app/build/outputs/apk/debug/app-debug.apk
+客户端首次构建：把 `android/local.properties.example` 复制为 `android/local.properties`，填入自己的 SDK 路径：
+
+```properties
+sdk.dir=C\:\\AndroidDev\\android-sdk
 ```
 
-服务端：
+## 四、构建
 
-```powershell
-cd server
-C:\AndroidDev\gradle-8.9\bin\gradle.bat test fatJar
-# 产物：server/build/libs/weilie-server-all.jar
-```
-
-## 运行服务端
+### 1. 客户端 APK
 
 ```bash
-java -jar weilie-server-all.jar          # 默认 0.0.0.0:8080
-# 数据目录通过 WEILIE_DATA_DIR 指定（默认 ./data）
-# 关键接口
-#   GET  /api/health
-#   POST /api/teams                    建房，返回 roomId / joinCode
-#   WS   /ws/{roomId}?userId=&name=&role=
-#   POST /api/photo/register           照片登记，返回 code / sig
-#   GET  /api/photo/verify?code=       验签 / 跨设备查询登记信息
-#   POST /api/photo/upload?code=       上传取证原图（≤8 MB）
-#   GET  /api/photo/file?code=         下载取证原图
-#   GET  /v/{code}                     验真网页（扫码打开）
-#   GET  /api/cells/near|cell|stats     基站库查询（OpenCelliD 瓦片缓存）
+cd android
+./gradlew :app:assembleDebug          # Windows: gradlew.bat :app:assembleDebug
+# 产物：app/build/outputs/apk/debug/app-debug.apk
 ```
 
-客户端默认服务器地址在 `ui/AppGraph.kt` 的 `DEFAULT_SERVER`，多人页也可当场改。
+单元测试：
 
-## 已交付产物
+```bash
+./gradlew :app:testDebugUnitTest
+```
 
-- **Android 安装包**：见 [Releases](https://github.com/Moessif/weilie/releases) → `weilie-v0.13.0-debug.apk`（arm64-v8a / x86_64，含百度地图 SDK 原生库，约 78 MB）
-  - 体积超过 GitHub 对仓库内单文件的建议上限（50 MB），因此**不入库**，改由 Releases 分发
-- `dist/weilie-server-v0.13.0-all.jar`：服务端可执行 fatJar（随源码入库，可直接 `java -jar` 启动）
-- `dist/` 仅供放置已构建产物；`dist/*.apk` 已在 `.gitignore` 中排除
+> 客户端已内置百度地图 SDK 的 `.so` 与 AAR（`app/libs`、`app/src/main/jniLibs`），
+> 换自己的百度 AK 时改 `AndroidManifest.xml` 里的 `com.baidu.lbsapi.API_KEY`，并在百度控制台绑定包名 `com.gakj.weilie` + 签名 SHA1。
 
-## 战报（全版本更新记录）
+### 2. 服务端 jar
 
-- [完整版战报（v0.1 → v0.11.2，26 个版本逐版记录）](docs/战报-v0.1-v0.11.2-完整版.md)
-- 长图海报：[docs/assets/战报-v0.1-v0.11.2-完整版.png](docs/assets/战报-v0.1-v0.11.2-完整版.png)
-- 生成脚本：[tools/make_battle_report_full.py](tools/make_battle_report_full.py)
+```bash
+cd server
+./gradlew test fatJar
+# 产物：build/libs/weilie-server-all.jar
+```
 
-## 第三方依赖与注意事项
+本地运行：
 
-- 地图：百度地图 Android SDK（`android/app/libs/BaiduLBS_Android.aar` + `jniLibs`）。**AK 与包名/SHA1 绑定需自行在百度控制台配置**，仓库内 `AndroidManifest.xml` 中的 `com.baidu.lbsapi.API_KEY` 仅为开发期占位，正式使用请替换为自己的 Key。
-- 基站库：OpenCelliD（CC BY-SA 4.0）。Key 只放在服务端（`data/cells/opencellid.key`），不随 APK 分发。
-- 相机/扫码：CameraX、ZXing core（二维码生成同样复用 ZXing）。
-- 本项目为公安院校教学科研与执法训练用途。使用时须遵守《网络安全法》《个人信息保护法》等法律法规，仅在授权范围内采集网络参数，不得用于侵犯公民隐私或其他非法用途。所有采集数据默认仅存本机。
+```bash
+WEILIE_DATA_DIR=./data java -Xms64m -Xmx320m -jar build/libs/weilie-server-all.jar
+# 健康检查：curl http://127.0.0.1:8080/api/health
+```
 
-## 版本轨迹
+服务端也支持 Docker 与 systemd，见 `server/README.md`、`server/Dockerfile`、`server/weilie.service`。
 
-| 版本 | 要点 |
+### 3. 管理站前端
+
+```bash
+cd admin-web
+pnpm install
+pnpm run build                         # 输出 admin-web/dist
+```
+
+管理站页面由服务端托管在 `/admin/`，构建后需要把 `admin-web/dist` 的内容复制到
+`server/src/main/resources/admin/`，再重新打服务端 jar：
+
+```bash
+# Windows PowerShell
+Remove-Item ..\server\src\main\resources\admin\* -Recurse -Force
+Copy-Item .\dist\* ..\server\src\main\resources\admin\ -Recurse -Force
+
+# macOS / Linux
+rm -rf ../server/src/main/resources/admin/* && cp -r dist/* ../server/src/main/resources/admin/
+```
+
+服务端启动后访问 `http://<host>:8080/admin/`。首次启动会自动创建超管账号
+`admin`，随机初始口令写在数据目录的 `superadmin-initial-password.txt`，首次登录强制改密。
+
+## 五、部署
+
+生产环境（单机 Docker 或 systemd 均可）：
+
+1. 准备 JDK 17 运行环境与可写数据目录；
+2. 打 `weilie-server-all.jar`，放到服务器并配置 `server/weilie.service`（或 `docker compose up -d`）；
+3. 放行 TCP 8080；浏览器访问 `/admin/`，用 `admin` + 初始口令登录改密；
+4. 在管理站里建组织 → 建用户 → 发激活码；手机端用激活码激活登录；
+5. 手机端「设置 → 服务器地址」填 `http://<host>:8080`。
+
+关键环境变量（完整表见 `docs/admin/运维手册.md` 与 `server/README.md`）：
+
+| 变量 | 作用 |
 | --- | --- |
-| v0.1 – v0.2 | 大厅/登录/单人地图页骨架，Canvas 自绘地图 → 接入百度地图，玻璃拟态视觉 |
-| v0.2.3 – v0.2.4 | 基站编号语义（ECI/NCI 分解、习惯写法）、工具箱长按拖拽自由摆放 |
-| v0.3.0 | 取证相机 + 双卡制式层 + 数据栏默认展开 + 标点详情 |
-| v0.4.0 | 水印相机（微信式版式）、主题系统、照片在线验真（服务端 + 网页） |
-| v0.4.3 – v0.4.5 | 多人协同修复与端到端联机、首启权限检查、5G NSA 显示、工具箱十件工具一屏 |
-| v0.5.0 – v0.5.2 | 打点三态、GPS 双安检 + 卡尔曼、凹包面积、热力图、理论覆盖区、带底图导出、静默跟踪、多人点选/分范围/导航；闪退修复 |
-| v0.6.x | 基站库图层（OpenCelliD）、按基站扇区/环带划区；CV 卡尔曼打点、服务小区徽标；历史记录删除 |
-| v0.7.0 | 参数规格校验、目标清单、派出所白话说明气泡、标点命名/可见性/删除、震动强度 |
-| v0.8.x | 基站数据层重构（SA/NSA 判定、按数据卡 + PLMN 过滤）；真机五问修复（标点删除、名称标签、默认面积、邻区口径、巨点） |
-| v0.9.x | 多人自由绘制范围（单指画/双指拖/撤销重画完成/按队员分配）、跨设备取证记录（photoCode）、单人删标点即时生效 |
-| v0.10.0 | 七项真机反馈：拍照标点删除+二次确认、命中热区收紧、多人叠加图层、浅色主题可读性、任务区以自身定位为中心、定位到队员、取证类型 emoji 图标 |
-| v0.11.x | 自由绘制实时轨迹与面积、拍照标点按任务隔离、固定深色主题；双指手势重写（起点锚定 + 投影实测）；模拟实测区域（圆/方形缓冲成面）与进图巨点修复 |
+| `WEILIE_DATA_DIR` | 数据目录（房间快照、照片、审计、数据库） |
+| `WEILIE_ADMIN_TOKEN` | 管理令牌，保护 `/metrics`、`/api/rooms` |
+| `WEILIE_HMAC_SECRET` | 照片验签密钥（不设则用 `data/hmac.secret`，**务必备份**） |
+| `WEILIE_SUPERADMIN_USER` / `WEILIE_SUPERADMIN_PASSWORD` | 首启引导超管 |
+| `WEILIE_TRUST_PROXY` | 放在反向代理后面时设为 `1`，才信任 `X-Forwarded-For` |
+| `WEILIE_COOKIE_SECURE` | HTTPS 环境设为 `1`，会话 Cookie 带 `Secure` |
+| `OPENCELLID_KEY` | 基站库代理密钥（只放服务端，**不要打进 App**） |
+
+## 六、协议与兼容性
+
+- 房间协同走 WebSocket，消息定义在**两端同名文件** `Protocol.kt`（`android/.../core/sync/Protocol.kt` 与 `server/.../Protocol.kt`）。
+  **改动协议必须两端同步提交**，字段一律带默认值，保证旧客户端仍能连新服务端。
+- 客户端与服务端版本可独立升级：服务端 v1.12 兼容旧 6 位邀请码，新邀请码为 8 位字母数字。
+- 取证照片验真：`POST /api/photo/register` 登记 → `GET /api/photo/verify?code=` 查询 → `GET /v/{code}` 网页验真。
+
+## 七、安全与合规
+
+- 仓库内**不含**任何服务器口令、HMAC 密钥、云厂商 AccessKey、OpenCelliD Key；这些都在 `.gitignore` 中排除，请勿提交。
+- 数据目录里的 `hmac.secret`、`admin.db`、照片原图属于敏感数据，禁止外传。
+- 服务端 v1.12.0 已内置：角色门（普通手机账号不能进管理站）、强制改密、双桶登录限流、邀请码校验、上传完整性校验、统一安全响应头与 CSP、请求体上限。
+- 已知待办见 `docs/admin/安全审计报告-2026-11-17.md` 第 5 章（房间强制凭证、房间组织隔离、TLS 反代、依赖升级）。
+- 本项目面向教学与课题研究，**现场使用须遵守数据安全与个人信息保护相关规定**。
+
+## 八、团队协作约定
+
+- 分支：`main` 保持可构建；功能开发开 `feat/<主题>`，修复开 `fix/<主题>`，合并前自测。
+- 提交信息：`<模块>: <做了什么>`，例如 `android: 修复静默跟踪在 NSA 下的状态抖动`。
+- 涉及协议、数据库表结构、接口路径的改动，请在 PR 描述里写清兼容性影响。
+- 版本号：`android/app/build.gradle.kts` 的 `versionCode` / `versionName`；服务端 `Application.kt` 的 `SERVER_VERSION`；管理站同步改 `admin-web` 里展示的版本号。
+- 发布：打好 APK/jar 后在 Releases 建 tag（如 `v0.22.0`）附上产物，仓库里只保留源码。
+- 新增文档放 `docs/`，并在 `docs/INDEX.md` 增一行索引。
+
+## 九、文档入口
+
+| 文档 | 内容 |
+| --- | --- |
+| `docs/INDEX.md` | 文档索引（含早期看板状态，仅供查阅） |
+| `docs/研究报告-v1.2.md` | 立项背景、技术路线、算法、试验与结论 |
+| `docs/协议-v1.3.md` | WebSocket / HTTP 协议说明 |
+| `docs/v1.4-入房令牌.md` | 入房令牌设计 |
+| `docs/运维手册-v1.3.md`、`docs/admin/运维手册.md` | 部署运维 |
+| `docs/admin/视觉重做说明.md` | 管理站设计系统与页面说明 |
+| `docs/admin/安全审计报告-2026-11-17.md` | 全项目白盒审计结论与修复状态 |
+| `docs/申报材料清单与填写指南.md` | 申报材料清单 |
+| 各 `docs/v0.x-*.md` | 逐版本变更说明 |
+
+## 十、许可与致谢
+
+本项目为参加中国人民公安大学学生科技应用创新大赛的研究成果，代码仅供学习与课题研究使用；
+第三方组件版权归各自作者所有（Jetpack Compose、Ktor、Vue、Element Plus、ECharts、百度地图 SDK、ZXing 等）。

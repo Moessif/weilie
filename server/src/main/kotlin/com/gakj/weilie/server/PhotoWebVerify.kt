@@ -6,6 +6,7 @@ import io.ktor.http.content.PartData
 import io.ktor.http.content.forEachPart
 import io.ktor.server.application.call
 import io.ktor.server.plugins.BadRequestException
+import io.ktor.server.plugins.origin
 import io.ktor.server.request.accept
 import io.ktor.server.request.contentType
 import io.ktor.server.request.receiveMultipart
@@ -263,8 +264,15 @@ private fun errorPage(title: String, detail: String): String {
  * - GET  /v/{code}               验真页（未登记也是 200 的红色徽章页；验证码格式非法返回 400）
  * - POST /api/photo/verify/file  multipart 上传核验（Accept: application/json 时返回 JSON）
  */
-fun Route.photoWebVerifyRoutes(registry: PhotoRegistry) {
+fun Route.photoWebVerifyRoutes(registry: PhotoRegistry, limiter: RateLimiter? = null) {
+    /** v1.12（审计 V20）：验真上传按 IP 限流，避免匿名接口被用来刷 CPU（sha256 + HMAC）或探测 */
+    fun allowVerify(ip: String): Boolean = limiter?.allow("photo_verify:$ip", 10) ?: true
     get("/v/{code}") {
+        val ip = call.request.origin.remoteHost
+        if (limiter != null && !limiter.allow("photo_web:$ip", 120)) {
+            call.respondText(errorPage("访问过于频繁", "请稍后再试。"), ContentType.Text.Html, HttpStatusCode.TooManyRequests)
+            return@get
+        }
         val code = call.parameters["code"].orEmpty().trim()
         if (!VERIFY_CODE_PATH.matches(code)) {
             call.respondText(
@@ -280,6 +288,14 @@ fun Route.photoWebVerifyRoutes(registry: PhotoRegistry) {
 
     post("/api/photo/verify/file") {
         val wantsJson = call.request.accept().orEmpty().contains("application/json")
+        if (!allowVerify(call.request.origin.remoteHost)) {
+            if (wantsJson) {
+                call.respond(HttpStatusCode.TooManyRequests, PhotoErrorResponse(error = "请求过于频繁，请稍后再试"))
+            } else {
+                call.respondText(errorPage("请求过于频繁", "请稍后再试。"), ContentType.Text.Html, HttpStatusCode.TooManyRequests)
+            }
+            return@post
+        }
         try {
             // 先校验 Content-Type：非 multipart 请求直接 400（ktor 收 multipart 时遇缺失 Content-Type 会抛 IllegalStateException）
             if (!call.request.contentType().match(ContentType.MultiPart.FormData)) {
@@ -388,7 +404,7 @@ fun Route.photoWebVerifyRoutes(registry: PhotoRegistry) {
             log.warn("文件验真处理异常: {}", e.message ?: e.javaClass.simpleName)
             if (wantsJson) {
                 val status = if (e is BadRequestException) HttpStatusCode.BadRequest else HttpStatusCode.InternalServerError
-                call.respond(status, PhotoErrorResponse(error = "请求处理失败：${e.message ?: e.javaClass.simpleName}"))
+                call.respond(status, PhotoErrorResponse(error = "请求处理失败，请稍后重试"))
             } else if (e is BadRequestException) {
                 call.respondText(
                     errorPage("请求不完整", "上传请求缺少 multipart 表单体，请从验真页重新提交。"),

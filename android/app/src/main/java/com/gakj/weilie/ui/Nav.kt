@@ -63,6 +63,8 @@ object Route {
     const val PREF_SERVER = "server_base"
     const val PREF_BAIDU_AK = "baidu_ak"
     const val PREF_NICKNAME = "nickname"
+    /** v0.16：团队任务的目标小区（ECI/NCI/经纬度），留空则不判定命中 */
+    const val PREF_TEAM_TARGET = "team_target_raw"
     const val PREF_VIBRATE = "vibrate_on_cell_change"
     const val PREF_CELL_ALERT = "cell_alert_notice"
     const val PREF_PINNED_TOOLS = "pinned_tools"

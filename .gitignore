@@ -1,4 +1,4 @@
-# 构建产物与本地配置
+# 构建产物与本地配置（不入库）
 build/
 .gradle/
 .kotlin/
@@ -7,12 +7,31 @@ local.properties
 *.hprof
 captures/
 *.iml
+*.log
+
+# 依赖与打包产物
+node_modules/
+dist/
+.vite/
+*.apk
+*.aab
+*.jar
+# Gradle wrapper 需要入库
+!gradle/wrapper/gradle-wrapper.jar
+
+# 运行时数据与密钥（服务端 / 工具脚本）
+data/
+*.secret
+*.keystore
+*.jks
+tools/*.env
+tools/superadmin-password.txt
+tools/*.password
+admin-superadmin.env
 
 # 系统与编辑器
 .DS_Store
 Thumbs.db
 *.swp
-
-# 构建产物走 GitHub Releases，不入库
-dist/*.apk
-
+.venv/
+__pycache__/

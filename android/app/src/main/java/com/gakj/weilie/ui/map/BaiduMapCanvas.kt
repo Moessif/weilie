@@ -96,6 +96,7 @@ fun BaiduMapCanvas(
     samples: List<SampleRecord> = emptyList(),
     hullLatLon: List<Pair<Double, Double>>? = null,
     bufferedLatLon: List<Pair<Double, Double>>? = null,
+    holesLatLon: List<List<Pair<Double, Double>>> = emptyList(),
     isolines: List<List<Pair<Double, Double>>> = emptyList(),
     members: List<MemberView> = emptyList(),
     markers: List<WsMsg.Marker> = emptyList(),
@@ -402,7 +403,7 @@ fun BaiduMapCanvas(
     val zoomBaiduNow = camera.zoom + BAIDU_ZOOM_OFFSET
     SideEffect {
         renderer.render(
-            target, samples, hullLatLon, bufferedLatLon, isolines, members, markers, zone, zones,
+            target, samples, hullLatLon, bufferedLatLon, holesLatLon, isolines, members, markers, zone, zones,
             selfLatLon, trackArrows, cellSites, sampleMarks, area, theories, heat,
             cellLibrary, selectedCellKey, draftPath,
             // 圆点半径要按“相机当前缩放”换算：地图刚加载时 mapStatus 还是 0/低级别，
@@ -508,6 +509,7 @@ private class BaiduOverlayRenderer(private val map: BaiduMap) {
         samples: List<SampleRecord>,
         hull: List<Pair<Double, Double>>?,
         buffered: List<Pair<Double, Double>>?,
+        holes: List<List<Pair<Double, Double>>> = emptyList(),
         isolines: List<List<Pair<Double, Double>>>,
         members: List<MemberView>,
         markers: List<WsMsg.Marker>,
@@ -532,6 +534,7 @@ private class BaiduOverlayRenderer(private val map: BaiduMap) {
             append(samples.size).append(':').append(samples.lastOrNull()?.tsEpochMs ?: 0L).append('|')
             append(target?.rawInput).append(':').append(target?.givenRadiusM).append('|')
             append(hull?.size ?: -1).append('|').append(buffered?.size ?: -1).append('|')
+            append(holes.size).append(':').append(holes.sumOf { it.size }).append('|')
             append(isolines.size).append(':').append(isolines.sumOf { it.size }).append('|')
             members.forEach { append(it.userId).append(it.lat).append(it.lon).append(it.onTarget) }
             append('|')
@@ -655,8 +658,8 @@ private class BaiduOverlayRenderer(private val map: BaiduMap) {
                         CircleOptions()
                             .center(bll(la, lo))
                             .radius(r.toInt().coerceAtLeast(20))
-                            .fillColor(0x1434D399)
-                            .stroke(Stroke(3f, 0xCC34D399.toInt()))
+                            .fillColor(ZoneStyle.fill(z.by))
+                            .stroke(Stroke(3f, ZoneStyle.stroke(z.by)))
                     }
                 }
                 "POLYGON" -> {
@@ -664,8 +667,8 @@ private class BaiduOverlayRenderer(private val map: BaiduMap) {
                     if (pts.size >= 3) add {
                         PolygonOptions()
                             .points(pts)
-                            .fillColor(0x1434D399)
-                            .stroke(Stroke(3f, 0xCC34D399.toInt()))
+                            .fillColor(ZoneStyle.fill(z.by))
+                            .stroke(Stroke(3f, ZoneStyle.stroke(z.by)))
                     }
                 }
             }
@@ -684,7 +687,8 @@ private class BaiduOverlayRenderer(private val map: BaiduMap) {
         }
 
         // 2. 覆盖拟合：缓冲带 → 凸包 → RSRP 等值线
-        polygonOf(buffered, 0x0D22D3EE, 0x00000000)?.let { o -> add { o } }
+        // 缓冲带同样要挖洞，否则会盖住凹包上的洞（v0.13.3）
+        polygonOf(buffered, 0x0D22D3EE, 0x00000000, holes)?.let { o -> add { o } }
         polygonOf(hull, 0x1A22D3EE, 0xB322D3EE.toInt())?.let { o -> add { o } }
         isolines.forEach { line ->
             val pts = line.map { bll(it.first, it.second) }
@@ -883,11 +887,18 @@ private class BaiduOverlayRenderer(private val map: BaiduMap) {
         ring: List<Pair<Double, Double>>?,
         fill: Int,
         stroke: Int,
+        holes: List<List<Pair<Double, Double>>> = emptyList(),
     ): PolygonOptions? {
         if (ring == null || ring.size < 3) return null
         val opts = PolygonOptions()
             .points(ring.map { bll(it.first, it.second) })
             .fillColor(fill)
+        // v0.13.3：内洞 —— 中间没走过的区域挖空，避免面积虚大
+        holes.filter { it.size >= 3 }.forEach { h ->
+            opts.addHoleOption(
+                com.baidu.mapapi.map.PolygonHoleOptions().addPoints(h.map { bll(it.first, it.second) })
+            )
+        }
         if (stroke != 0) opts.stroke(Stroke(3f, stroke))
         return opts
     }

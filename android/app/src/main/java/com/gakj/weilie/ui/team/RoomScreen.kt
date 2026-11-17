@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.sp
 import com.gakj.weilie.core.sync.ConnState
 import com.gakj.weilie.core.sync.MemberView
 import com.gakj.weilie.core.sync.RoomClient
+import com.gakj.weilie.core.sync.TeamToken
 import com.gakj.weilie.core.sync.WsMsg
 import com.gakj.weilie.ui.AppGraph
 import com.gakj.weilie.ui.Route
@@ -102,12 +103,6 @@ fun RoomScreen(roomId: String, onBack: () -> Unit, onEnterTask: () -> Unit) {
     }
     var connectedHere by remember { mutableStateOf(false) }
     DisposableEffect(roomId) {
-        // 关键修复：connect() 内部用 running CAS 做了幂等，必须无条件调用。
-        // 旧代码写的是 `if (AppGraph.currentRoom !== room) room.connect(...)`，
-        // 而上面 remember 刚把 room 赋给了 AppGraph.currentRoom，条件恒为 false ——
-        // 结果整个 App 的「房间管理页」从来没有建立过 WebSocket，界面一直显示「离线」、
-        // 成员列表永远 0 人（用户真机反馈的"创建房间后不对劲"就是这个）。
-        room.connect(WsMsg.Hello(roomId = roomId, userId = userId, name = name, role = role))
         connectedHere = true
         onDispose {
             if (connectedHere && AppGraph.currentRoom === room) {
@@ -115,6 +110,17 @@ fun RoomScreen(roomId: String, onBack: () -> Unit, onEnterTask: () -> Unit) {
                 AppGraph.currentRoom = null
             }
         }
+    }
+    // v1.4：先换令牌再连接（老服务端返回 404 时按旧方式连接）
+    LaunchedEffect(roomId) {
+        val http = (AppGraph.prefs.getString(Route.PREF_SERVER, "") ?: "").trim().trimEnd('/')
+            .ifBlank { AppGraph.DEFAULT_SERVER }
+        room.token = if (code.isBlank()) {
+            ""
+        } else {
+            runCatching { TeamToken.fetch(http, roomId, code, userId, name, role) }.getOrNull().orEmpty()
+        }
+        room.connect(WsMsg.Hello(roomId = roomId, userId = userId, name = name, role = role))
     }
 
     val conn by room.state.collectAsState()

@@ -13,8 +13,8 @@ android {
         applicationId = "com.gakj.weilie"
         minSdk = 26
         targetSdk = 35
-        versionCode = 32
-        versionName = "0.13.0"
+        versionCode = 58
+        versionName = "0.22.0"
         ndk {
             // 只保留真机主力 ABI（arm64）与模拟器 ABI（x86_64），APK 体积减半
             abiFilters += listOf("arm64-v8a", "x86_64")
@@ -75,4 +75,6 @@ dependencies {
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")
     testImplementation(libs.junit)
+    // 单测里需要真实的 org.json（AGP 提供的 android.jar 只是桩）
+    testImplementation("org.json:json:20240303")
 }

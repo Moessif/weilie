@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -97,18 +98,23 @@ fun MapLayersPanel(
     onLibrarySearch: () -> Unit = {},
     onDismiss: () -> Unit,
     // 浮层高度上限：调用点传入「屏幕剩余高度」，避免面板从数据栏下方展开时越过屏幕底部
-    maxHeight: Dp = (LocalConfiguration.current.screenHeightDp.dp - 140.dp),
+    maxHeight: Dp = (LocalConfiguration.current.screenHeightDp.dp - 140.dp).coerceIn(220.dp, 620.dp),
+    /** 放到底部抽屉里：去掉浮层的顶部留白与固定宽度，交给抽屉排版（v0.13.8） */
+    inSheet: Boolean = false,
 ) {
     Box(
         Modifier
-            .clickable(onClick = onDismiss) // 点空白关闭
-            .padding(top = 52.dp),
+            .then(if (inSheet) Modifier else Modifier.clickable(onClick = onDismiss)) // 浮层模式才点空白关闭
+            .padding(top = if (inSheet) 0.dp else 52.dp),
         contentAlignment = Alignment.TopStart,
     ) {
         Column(
             Modifier
                 .padding(start = 0.dp)
-                .width(268.dp)
+                .then(
+                    if (inSheet) Modifier.fillMaxWidth()
+                    else Modifier.widthIn(max = 268.dp).fillMaxWidth(0.82f),
+                )
                 // 叠加图层越加越多（热力参数 5 个滑杆 + 封闭区域成面方式 + 基站库），
                 // 超出屏高时整块面板会被裁掉、下面的选项点不到 → 限制高度并允许滚动
                 .heightIn(max = maxHeight)
@@ -366,7 +372,7 @@ private fun LayerToggleRow(label: String, checked: Boolean, onChange: (Boolean) 
                             uncheckedTrackColor = WColors.BarOff,
                             uncheckedBorderColor = WColors.GlassBorder,
                         ),
-            modifier = Modifier.height(26.dp),
+            // 不再强制 26dp 高度：Material3 Switch 的绘制高度大于该值，会在 1.25 倍字体下压到下一行
         )
     }
 }
@@ -390,7 +396,7 @@ private fun HeatParamSlider(
             valueRange = range,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(20.dp),
+                .heightIn(min = 32.dp),
             colors = SliderDefaults.colors(
                 thumbColor = WColors.Primary,
                 activeTrackColor = WColors.Primary,

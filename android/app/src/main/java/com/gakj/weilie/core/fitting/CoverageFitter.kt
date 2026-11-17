@@ -17,7 +17,29 @@ data class CoverageResult(
     val inlierCount: Int,
     val totalSamples: Int,
     val thresholdDbm: Double,
+    /** 实际使用的成面引擎（v0.13.2） */
+    val engine: Engine = Engine.ALPHA_SHAPE,
+    /** 为什么选这个引擎（白话，可直接给用户看） */
+    val engineReason: String = "",
+    /** 两引擎面积差 > 阈值：说明这次拟合对算法敏感，建议补测 */
+    val unstable: Boolean = false,
+    /** 轨迹缓冲引擎的面积（m²），仅该引擎有值 */
+    val trackBufferAreaM2: Double? = null,
+    /** 内洞（环绕走位时中间没走过的区域），经纬度环；v0.13.3 */
+    val holesLatLon: List<List<Pair<Double, Double>>> = emptyList(),
+    /** 外环面积（m²，不含洞） */
+    val hullAreaM2: Double = 0.0,
+    /** 内洞面积合计（m²） */
+    val holesAreaM2: Double = 0.0,
+    /** 覆盖面积 = 外环 − 洞；导出的多边形面积必须与它一致 */
+    val coverageAreaM2: Double = 0.0,
+    /** 缓冲带面积（仅用于展示不确定带，不计入覆盖面积） */
+    val bufferedAreaM2: Double = 0.0,
 ) {
+    enum class Engine(val label: String) {
+        ALPHA_SHAPE("凹包"),
+        TRACK_BUFFER("轨迹缓冲"),
+    }
     data class HeatGrid(
         val minLat: Double, val minLon: Double,
         val latStep: Double, val lonStep: Double,
@@ -31,6 +53,10 @@ data class CoverageResult(
         val sampleCountFactor: Double,
         val directionCoverage: Double,
         val meanAccuracyM: Double,
+        /** 时段覆盖：会话三等分中有样本的比例（v0.13.1） */
+        val timeCoverage: Double = 1.0,
+        /** 短板原因，按影响从大到小排序，供 UI 直接展示（v0.13.1） */
+        val reasons: List<String> = emptyList(),
     ) {
         enum class Level { 低, 中, 高 }
     }
@@ -46,6 +72,29 @@ data class CoverageResult(
  */
 object CoverageFitter {
 
+    /**
+     * 平均最近邻距（米）：每个点到最近邻点的距离取平均。
+     * 点太多时等距抽样到 600 个，避免 O(n²) 拖慢主线程。
+     */
+    internal fun averageNearestNeighborM(points: List<Pt>): Double {
+        if (points.size < 2) return 0.0
+        val sample = if (points.size <= 600) points
+        else points.filterIndexed { i, _ -> i % (points.size / 600 + 1) == 0 }
+        var sum = 0.0
+        for (p in sample) {
+            var best = Double.MAX_VALUE
+            for (q in points) {
+                if (q === p) continue
+                val dx = q.x - p.x
+                val dy = q.y - p.y
+                val d2 = dx * dx + dy * dy
+                if (d2 < best) best = d2
+            }
+            if (best < Double.MAX_VALUE) sum += kotlin.math.sqrt(best)
+        }
+        return sum / sample.size
+    }
+
     data class Options(
         val thresholdDbm: Double = -110.0,
         val bufferMeters: Double = 25.0,
@@ -59,6 +108,26 @@ object CoverageFitter {
          * 把"极限弱点"排除在外，避免弱信号把面积撑出尖角（需求 3.1）。
          */
         val weakMarginDb: Double = 3.0,
+
+        // ---- v0.13.2 引擎自动选择 ----
+        /** 有效点少于该值 → 用轨迹缓冲（凹包在稀疏点下会退化成条带） */
+        val trackBufferMinPoints: Int = 30,
+        /** 平均最近邻距大于该值 → 用轨迹缓冲（点太散，连不成面） */
+        val trackBufferNearestM: Double = 40.0,
+        /** 轨迹缓冲半径（米）；0 = 按平均定位精度自适应 */
+        val trackBufferRadiusM: Double = 0.0,
+        /** 是否额外跑一次两引擎对比（会明显增加耗时，只在导出/详情页开启） */
+        val computeStability: Boolean = false,
+        /** 两引擎面积差超过该比例视为“拟合不稳定” */
+        val unstableAreaDeltaRatio: Double = 0.30,
+
+        // ---- v0.13.3 内洞 ----
+        /** 是否检测内洞（环绕走位时中间没走过的区域） */
+        val detectHoles: Boolean = true,
+        /** 洞半径（米）：离轨迹超过该距离的内部区域算“没走过”；0 = 按精度自适应 */
+        val holeRadiusM: Double = 0.0,
+        /** 小于该面积的洞忽略 */
+        val minHoleAreaM2: Double = 300.0,
     )
 
     fun fit(samples: List<SampleRecord>, opt: Options = Options()): CoverageResult? {
@@ -89,16 +158,92 @@ object CoverageFitter {
         val strong = inliers.filter { it.rsrp >= opt.thresholdDbm + opt.weakMarginDb }
         val basis = if (strong.size >= 3) strong else inliers
 
-        // 凹包（Alpha Shape）优先：比凸包更贴合真实走测（L 形/环形）；失败才回退凸包
         val basisPts = basis.map { it.p }
-        val alpha = if (opt.alphaM > 0.0) opt.alphaM else AlphaShape.adaptiveAlpha(basisPts)
-        val rawHull = AlphaShape.hull(basisPts, AlphaShape.Options(alphaM = alpha))
-            .ifEmpty { ConvexHull.hull(basisPts) }
-        if (rawHull.size < 3) return null
-        // 抽稀去毛刺（Douglas–Peucker），再外挂不确定缓冲带
-        val hull = PolylineSimplify.simplifyRing(rawHull, (meanAcc * 0.4).coerceIn(1.5, 8.0))
-            .takeIf { it.size >= 3 } ?: rawHull
-        val buffered = PolygonBuffer.buffer(hull, opt.bufferMeters + meanAcc * 0.5)
+
+        // ---- v0.13.2：引擎自动选择 ----
+        // 稀疏点（< trackBufferMinPoints）或点距过大（> trackBufferNearestM）时，
+        // 凹包会退化成细长条甚至成不了面，此时改用「轨迹缓冲」更接近民警的直觉。
+        val avgNn = averageNearestNeighborM(basisPts)
+        val preferBuffer = basisPts.size < opt.trackBufferMinPoints || avgNn > opt.trackBufferNearestM
+        val alphaHull: () -> List<Pt>? = {
+            val alpha = if (opt.alphaM > 0.0) opt.alphaM else AlphaShape.adaptiveAlpha(basisPts)
+            val raw = AlphaShape.hull(basisPts, AlphaShape.Options(alphaM = alpha))
+                .ifEmpty { ConvexHull.hull(basisPts) }
+            if (raw.size < 3) null
+            else PolylineSimplify.simplifyRing(raw, (meanAcc * 0.4).coerceIn(1.5, 8.0))
+                .takeIf { it.size >= 3 } ?: raw
+        }
+
+        var engine = CoverageResult.Engine.ALPHA_SHAPE
+        var engineReason = ""
+        var trackAreaM2: Double? = null
+        var hull: List<Pt>
+        var buffered: List<Pt>
+
+        val bufferRadius = if (opt.trackBufferRadiusM > 0.0) {
+            opt.trackBufferRadiusM
+        } else {
+            (meanAcc * 1.5).coerceIn(10.0, 60.0)
+        }
+        val tb = if (preferBuffer) {
+            TrackBufferArea.build(usable, TrackBufferArea.Options(radiusM = bufferRadius))
+        } else {
+            null
+        }
+
+        if (tb != null) {
+            engine = CoverageResult.Engine.TRACK_BUFFER
+            hull = tb.ringLatLon.map { Geo.toLocal(it.first, it.second, lat0, lon0) }
+            // 缓冲带已在轨迹缓冲里体现，不再二次外扩
+            buffered = hull
+            trackAreaM2 = tb.areaM2
+            val why = if (basisPts.size < opt.trackBufferMinPoints) {
+                "有效点仅 ${basisPts.size} 个（< ${opt.trackBufferMinPoints}）"
+            } else {
+                "平均点距 %.0f 米（> %.0f 米）".format(avgNn, opt.trackBufferNearestM)
+            }
+            engineReason = "$why，改用轨迹缓冲（半径 %.0f 米）".format(bufferRadius)
+        } else {
+            val h = alphaHull() ?: return null
+            hull = h
+            buffered = PolygonBuffer.buffer(hull, opt.bufferMeters + meanAcc * 0.5)
+            engineReason = "有效点 ${basisPts.size} 个、平均点距 %.0f 米，用凹包".format(avgNn)
+        }
+        if (hull.size < 3) return null
+
+        // ---- v0.13.3：内洞 + 面积口径统一 ----
+        // 面积一律用「实际画出来的环」计算：外环 − 洞 = 覆盖面积，
+        // 导出与界面都用这同一个数，避免 GIS 一算对不上。
+        val hullArea = kotlin.math.abs(ConvexHull.area(hull))
+        val trackLocal = usable.map { Geo.toLocal(it.lat, it.lon, lat0, lon0) }
+        val holeR = if (opt.holeRadiusM > 0.0) opt.holeRadiusM else (meanAcc * 2.0).coerceIn(20.0, 60.0)
+        val holes = if (opt.detectHoles) {
+            CoverageHoles.detect(
+                hull = hull,
+                track = trackLocal,
+                lat0 = lat0,
+                lon0 = lon0,
+                holeRadiusM = holeR,
+                minHoleAreaM2 = opt.minHoleAreaM2,
+            )
+        } else {
+            CoverageHoles.NONE
+        }
+        val coverageArea = (hullArea - holes.areaM2).coerceAtLeast(0.0)
+        val bufferedArea = kotlin.math.abs(ConvexHull.area(buffered))
+
+        // 可选：两引擎面积差对比（默认关闭，避免打点时重复计算）
+        var unstable = false
+        if (opt.computeStability && engine == CoverageResult.Engine.ALPHA_SHAPE && usable.size <= 400) {
+            val alt = TrackBufferArea.build(usable, TrackBufferArea.Options(radiusM = bufferRadius))
+            if (alt != null && trackAreaM2 == null) {
+                val alphaArea = kotlin.math.abs(ConvexHull.area(hull))
+                val base = maxOf(alphaArea, alt.areaM2)
+                if (base > 1e-6 && kotlin.math.abs(alphaArea - alt.areaM2) / base > opt.unstableAreaDeltaRatio) {
+                    unstable = true
+                }
+            }
+        }
 
         val grid = IdwInterpolator.build(fitSamples, cellMeters = opt.cellMeters)
         val loops = MarchingSquares.isolines(grid, opt.thresholdDbm)
@@ -110,13 +255,34 @@ object CoverageFitter {
             Pt(hull.map { it.x }.average(), hull.map { it.y }.average()),
             basis.map { it.p },
         )
-        val countFactor = minOf(1.0, usable.size / 120.0)
-        val score = ((countFactor * 0.5 + dirCov * 0.5) * 100).roundToInt()
-        val level = when {
-            score >= 70 && sectorsFilled >= 12 -> CoverageResult.Confidence.Level.高
-            score >= 40 -> CoverageResult.Confidence.Level.中
-            else -> CoverageResult.Confidence.Level.低
+        // 样本量因子与置信度模型保持同一口径（口径常量见 ConfidenceModel.SAMPLE_SATURATION）
+        val countFactor = minOf(1.0, usable.size / ConfidenceModel.SAMPLE_SATURATION)
+
+        // v0.13.1：时段覆盖。把会话时长三等分，统计其中「有样本」的段数 / 3。
+        // 会话太短（< 60 s）时无法判断时段，按满分处理，避免把短测判死。
+        val tMin = usable.minOf { it.tsEpochMs }
+        val tMax = usable.maxOf { it.tsEpochMs }
+        val spanMs = tMax - tMin
+        val timeFactor: Double = if (spanMs < 60_000L) {
+            1.0
+        } else {
+            val hit = BooleanArray(3)
+            usable.forEach { s ->
+                val idx = (((s.tsEpochMs - tMin).toDouble() / spanMs) * 3).toInt().coerceIn(0, 2)
+                hit[idx] = true
+            }
+            hit.count { it } / 3.0
         }
+
+        // v0.13.1：置信度改为短板模型（实现在 ConfidenceModel，便于单测）
+        val conf = ConfidenceModel.compute(
+            sampleCount = usable.size,
+            sectorsFilled = sectorsFilled,
+            timeCoverage = timeFactor,
+        )
+        val score = conf.score
+        val level = conf.level
+        val reasons = conf.reasons
 
         // 热力图转经纬度步长
         val latStep = grid.cellH / 110540.0
@@ -129,10 +295,19 @@ object CoverageFitter {
             bufferedLocal = buffered, bufferedLatLon = toLatLon(buffered),
             isolineLoopsLatLon = loops.map { toLatLon(it) },
             heat = CoverageResult.HeatGrid(minLat, minLon, latStep, lonStep, grid.cols, grid.rows, grid.values.copyOf()),
-            confidence = CoverageResult.Confidence(score, level, countFactor, dirCov, meanAcc),
+            confidence = CoverageResult.Confidence(score, level, countFactor, dirCov, meanAcc, timeFactor, reasons),
             inlierCount = inliers.size,
             totalSamples = usable.size,
             thresholdDbm = opt.thresholdDbm,
+            engine = engine,
+            engineReason = engineReason,
+            unstable = unstable,
+            trackBufferAreaM2 = trackAreaM2,
+            holesLatLon = holes.holesLatLon,
+            hullAreaM2 = hullArea,
+            holesAreaM2 = holes.areaM2,
+            coverageAreaM2 = coverageArea,
+            bufferedAreaM2 = bufferedArea,
         )
     }
 }

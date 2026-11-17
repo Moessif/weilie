@@ -52,6 +52,7 @@ import androidx.compose.material.icons.rounded.Remove
 import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -79,6 +80,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -149,6 +151,7 @@ import kotlin.math.roundToInt
  *      简单功能原地展示、复杂功能弹玻璃浮窗；右下默认 AI 悬浮钮 + 最多 3 个固定小组件
  */
 @Composable
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 fun SingleMapScreen(
     taskId: String,
     onBack: () -> Unit,
@@ -552,9 +555,9 @@ fun SingleMapScreen(
         }
     }
 
-    // 需求 8：实心点封闭区域（凹包优先，点不足退化条带）
+    // 需求 8：模拟实测区域（仅在 SIMULATED 模式构建；AUTO 模式直接用 CoverageFitter 的 hull）
     LaunchedEffect(areaOn, areaBuildOptions, samples.size, samples.lastOrNull()?.tsEpochMs) {
-        if (!areaOn) {
+        if (!areaOn || areaBuildOptions.mode != AreaBuilder.Mode.SIMULATED) {
             areaResult = null
             return@LaunchedEffect
         }
@@ -701,8 +704,9 @@ fun SingleMapScreen(
             modifier = Modifier.fillMaxSize(),
             target = task.target,
             samples = samples,
-            hullLatLon = fit?.hullLatLon,
-            bufferedLatLon = fit?.bufferedLatLon,
+            // 统一几何：AUTO 模式由 area 画 CoverageFitter 的 hull（含洞），不再单独画 hull/buffered
+            hullLatLon = null,
+            bufferedLatLon = null,
             isolines = fit?.isolineLoopsLatLon ?: emptyList(),
             markers = markers,
             camera = camera,
@@ -710,8 +714,28 @@ fun SingleMapScreen(
             trackArrows = layerMode == MapLayerMode.TRACK,
             cellSites = if (layerMode == MapLayerMode.CELLS) extractCellSites(samples) else emptyList(),
             sampleMarks = true,
-            area = areaResult?.takeIf { areaOn && it.ringLatLon.size >= 3 }?.let {
-                ClosedArea(ring = it.ringLatLon, label = it.kind.label)
+            area = when {
+                !areaOn -> null
+                areaMode == AreaBuilder.Mode.SIMULATED ->
+                    areaResult?.takeIf { it.ringLatLon.size >= 3 }?.let {
+                        ClosedArea(
+                            ring = it.ringLatLon,
+                            fillColor = 0x5534D399,
+                            strokeColor = 0xCC34D399.toInt(),
+                            label = "模拟区域（不参与统计）",
+                        )
+                    }
+                else -> fit?.let { f ->
+                    f.hullLatLon.takeIf { it.size >= 3 }?.let {
+                        ClosedArea(
+                            ring = it,
+                            holes = f.holesLatLon,
+                            fillColor = 0x5522D3EE,
+                            strokeColor = 0xCC22D3EE.toInt(),
+                            label = "实测覆盖区",
+                        )
+                    }
+                }
             },
             theories = buildTheoryShapes(theory),
             heat = heatLayer.takeIf { heatOn },
@@ -816,7 +840,12 @@ fun SingleMapScreen(
                         ?: "${c.rat.displayName} 小区"
                 } ?: emptyList(),
                 neighborHint = snapshot?.neighborNote.orEmpty(),
-                confidenceText = fit?.confidence?.let { "${it.level.name} ${it.score0to100}分" },
+                confidenceText = fit?.confidence?.let { c ->
+                            val engine = fit?.engine?.label ?: ""
+                            val reason = c.reasons.firstOrNull()
+                            if (reason.isNullOrBlank()) "${c.level.name} ${c.score0to100}分 · $engine"
+                            else "${c.level.name} ${c.score0to100}分 · $engine · $reason"
+                        },
                 snapshot = snapshot,
                 lastSample = samples.lastOrNull(),
                 events = events,
@@ -825,34 +854,32 @@ fun SingleMapScreen(
                 sims = snapshot?.sims ?: emptyList(),
                 expertMode = expertMode,
                 onExpertModeChange = { expertMode = it },
+                // 按实际窗口高度判断（wm size 覆盖时 LocalConfiguration 可能不准）
+                compact = maxH / LocalDensity.current.density < 640f,
             )
             Spacer(Modifier.height(Space.x2))
             Row(horizontalArrangement = Arrangement.spacedBy(Space.x2)) {
-                GlassIconButton(Icons.Rounded.Layers, "图层", size = 40.dp, onMap = true) { showLayers = !showLayers }
+                GlassIconButton(Icons.Rounded.Layers, "图层", size = 40.dp, onMap = true) {
+                    showLayers = !showLayers
+                }
                 GlassIconButton(Icons.Rounded.Info, "目标", size = 40.dp, onMap = true) { showTargetInfo = true }
             }
         }
 
-        // ---------- 图层浮层：全屏透明遮罩承接「点空白关闭」，浮层紧贴按钮列右侧 ----------
+        // ---------- 图层浮层：改为底部抽屉，避免压住「暂停」与比例尺（v0.13.6） ----------
         if (showLayers) {
-            // 返回键优先关闭浮层，而不是直接弹「退出采集」
-            BackHandler { showLayers = false }
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                    ) { showLayers = false },
+            val density = LocalDensity.current.density
+            // 抽屉高度取窗口 70%，内部自身可滚动
+            val panelMaxH = ((maxH / density) * 0.70f).dp
+            ModalBottomSheet(
+                onDismissRequest = { showLayers = false },
+                containerColor = WColors.Bg1,
             ) {
                 Box(
                     Modifier
-                        .align(Alignment.TopStart)
-                        .statusBarsPadding()
-                        .padding(
-                            start = Space.screenH,
-                            top = Space.x2 + with(LocalDensity.current) { topChromePx.toDp() },
-                        ),
+                        .fillMaxWidth()
+                        .padding(horizontal = Space.screenH)
+                        .padding(bottom = Space.x2),
                 ) {
                     MapLayersPanel(
                         current = layerMode,
@@ -905,8 +932,9 @@ fun SingleMapScreen(
                             showCellSearch = true
                         },
                         onDismiss = { showLayers = false },
-                    // 还要给底部「暂停/采集」主钮与比例尺留出空间，避免浮层一开就压住主操作
-                    maxHeight = with(LocalDensity.current) { (maxH - topChromePx).toDp() } - 200.dp,
+                        // 抽屉模式：去掉浮层留白/固定宽度，高度改由抽屉约束
+                        inSheet = true,
+                        maxHeight = panelMaxH,
                     )
                 }
             }
@@ -919,7 +947,9 @@ fun SingleMapScreen(
                 .navigationBarsPadding()
                 .padding(12.dp),
         ) {
-            GlassIconButton(Icons.Rounded.Build, "工具箱", size = 44.dp, onMap = true) { showTools = true }
+            GlassIconButton(Icons.Rounded.Build, "工具箱", size = 44.dp, onMap = true) {
+                showTools = true
+            }
         }
 
         // ---------- 右下：AI + 缩放/定位（导航类固定，不参与拖拽） ----------
@@ -1252,7 +1282,10 @@ fun SingleMapScreen(
                                     add(MarkStyles.MAIN_FILL to "主区命中")
                                     add(MarkStyles.baseColor(samples.lastOrNull()?.servingCi) to "邻区命中")
                                     add(MarkStyles.OUT_RING to "脱离")
-                                    if (areaOn) add(0xFF34D399.toInt() to "实测覆盖区")
+                                    if (areaOn) add(
+                                        if (areaMode == AreaBuilder.Mode.SIMULATED) 0xFF34D399.toInt() to "模拟区域（示意）"
+                                        else 0xFF22D3EE.toInt() to "实测覆盖区",
+                                    )
                                     if (theory != null) add(TheoryShape.BLUE to "理论覆盖区")
                                     if (theory?.radiusM != null) add(TheoryShape.ORANGE to "TA 距离带")
                                     if (theory != null && areaOn) add(TheoryShape.PURPLE to "理论∩实测")
@@ -1265,18 +1298,23 @@ fun SingleMapScreen(
                             popup = null
                             areaOn = !areaOn
                             AppGraph.prefs.edit().putBoolean(Route.PREF_AREA_ON, areaOn).apply()
-                            val r = if (areaOn) {
-                                areaResult ?: AreaBuilder.build(samples).also { areaResult = it }
-                            } else null
-                            toast(
-                                ctx,
-                                when {
-                                    !areaOn -> "已关闭实测封闭区域"
-                                    r == null || r.kind == AreaBuilder.Kind.NONE ->
-                                        "有效实心点不足（需 ≥2 个），暂无法成面"
-                                    else -> "已生成${r.kind.label} · ${r.pointCount} 个有效点"
-                                },
-                            )
+                            if (!areaOn) {
+                                toast(ctx, "已关闭覆盖区域")
+                            } else if (areaMode == AreaBuilder.Mode.SIMULATED) {
+                                // 用当前设置构建（此前后台/开关路径漏传参数，会退回默认凹包/30m）
+                                val r = areaResult
+                                    ?: AreaBuilder.build(samples, areaBuildOptions).also { areaResult = it }
+                                toast(
+                                    ctx,
+                                    if (r == null || r.kind == AreaBuilder.Kind.NONE) {
+                                        "有效实心点不足（需 ≥2 个），暂无法生成模拟区域"
+                                    } else {
+                                        "已生成模拟区域 · ${r.pointCount} 个有效点（不参与面积统计）"
+                                    },
+                                )
+                            } else {
+                                toast(ctx, "已显示实测覆盖区（与覆盖面积同源）")
+                            }
                         },
                         theoryOn = theory != null,
                     )

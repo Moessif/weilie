@@ -32,7 +32,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CenterFocusStrong
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Groups
+import androidx.compose.material.icons.rounded.IosShare
 import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.MyLocation
 import androidx.compose.material.icons.rounded.NetworkCheck
@@ -187,16 +189,20 @@ private fun PageIntro() {
         Spacer(Modifier.height(Rhythm.section))
         FeatureRow(Icons.Rounded.CenterFocusStrong, "目标参数智能解析", "ECI / NCI / LAC+CI / 经纬度多格式一键识别")
         Spacer(Modifier.height(Space.x2))
-        FeatureRow(Icons.Rounded.NetworkCheck, "1Hz 采样与信号评级", "RSRP/RSRQ/SINR 逐秒记录，六档评级直观呈现")
+        FeatureRow(Icons.Rounded.NetworkCheck, "逐秒采样与信号评级", "RSRP/RSRQ/SINR 逐秒记录，命中目标自动判定")
         Spacer(Modifier.height(Space.x2))
-        FeatureRow(Icons.Rounded.Layers, "覆盖拟合与等值线", "凹包边界 + 插值等值线，覆盖范围一眼看清")
+        FeatureRow(Icons.Rounded.Layers, "覆盖拟合与面积", "凹包边界 + 内洞 + 覆盖率置信度，面积口径可追溯")
         Spacer(Modifier.height(Space.x2))
-        FeatureRow(Icons.Rounded.Groups, "多人协同与 AI 助手", "队友位置实时共享，内置通信技术问答助手")
+        FeatureRow(Icons.Rounded.Groups, "多人协同与任务区", "队友位置、任务圈、在地标点、对讲与拍照取证")
+        Spacer(Modifier.height(Space.x2))
+        FeatureRow(Icons.Rounded.IosShare, "导出与复盘", "KML / GeoJSON / CSV / 地图截图，全队或本人均可导出")
+        Spacer(Modifier.height(Space.x2))
+        FeatureRow(Icons.Rounded.AutoAwesome, "AI 现场助手", "基于当前任务与采样数据的通信技术问答")
         Spacer(Modifier.height(Rhythm.section))
         Eyebrow("三步上手")
         Spacer(Modifier.height(Space.x3))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Space.x2)) {
-            listOf("01" to "建任务", "02" to "现场走测", "03" to "查看覆盖").forEach { (num, label) ->
+            listOf("01" to "建任务", "02" to "走测/协同", "03" to "复盘导出").forEach { (num, label) ->
                 Column(
                     Modifier
                         .weight(1f)
